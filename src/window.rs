@@ -14,9 +14,9 @@ use crate::{
     SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow,
     SharedString, Size, StrikethroughStyle, Style, SubscriberSet, Subscription, SystemWindowTab,
     SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task, TextStyle, TextStyleRefinement,
-    TransformationMatrix, Underline, UnderlineStyle, WindowAppearance, WindowBackgroundAppearance,
-    WindowBounds, WindowControls, WindowDecorations, WindowOptions, WindowParams, WindowTextSystem,
-    point, prelude::*, px, rems, size, transparent_black,
+    TouchPhase, TransformationMatrix, Underline, UnderlineStyle, WindowAppearance,
+    WindowBackgroundAppearance, WindowBounds, WindowControls, WindowDecorations, WindowOptions,
+    WindowParams, WindowTextSystem, point, prelude::*, px, rems, size, transparent_black,
 };
 use anyhow::{Context as _, Result, anyhow};
 use collections::{FxHashMap, FxHashSet};
@@ -853,6 +853,9 @@ pub struct Window {
     default_prevented: bool,
     mouse_position: Point<Pixels>,
     mouse_hit_test: HitTest,
+    /// Cumulative scale of the pinch gesture in progress, used to fill in
+    /// `PinchEvent::scale` so platform backends only report deltas.
+    pinch_scale: f32,
     modifiers: Modifiers,
     capslock: Capslock,
     scale_factor: f32,
@@ -1235,6 +1238,7 @@ impl Window {
             focus_lost_listeners: SubscriberSet::new(),
             default_prevented: true,
             mouse_position,
+            pinch_scale: 1.0,
             mouse_hit_test: HitTest::default(),
             modifiers,
             capslock,
@@ -3616,6 +3620,18 @@ impl Window {
                 self.mouse_position = scroll_wheel.position;
                 self.modifiers = scroll_wheel.modifiers;
                 PlatformInput::ScrollWheel(scroll_wheel)
+            }
+            PlatformInput::Pinch(mut pinch) => {
+                self.mouse_position = pinch.position;
+                self.modifiers = pinch.modifiers;
+                // Backends report only the incremental `delta`; accumulate it
+                // here so every platform agrees on what `scale` means.
+                if pinch.phase == TouchPhase::Started {
+                    self.pinch_scale = 1.0;
+                }
+                self.pinch_scale *= pinch.delta;
+                pinch.scale = self.pinch_scale;
+                PlatformInput::Pinch(pinch)
             }
             // Translate dragging and dropping of external files from the operating system
             // to internal drag and drop events.

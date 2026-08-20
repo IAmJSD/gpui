@@ -1,7 +1,7 @@
 use crate::{
     Capslock, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, ModifiersChangedEvent, MouseButton,
-    MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection, Pixels,
-    PlatformInput, ScrollDelta, ScrollWheelEvent, TouchPhase,
+    MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection, PinchEvent,
+    Pixels, PlatformInput, ScrollDelta, ScrollWheelEvent, TouchPhase,
     platform::mac::{
         LMGetKbdType, NSStringExt, TISCopyCurrentKeyboardLayoutInputSource,
         TISGetInputSourceProperty, UCKeyTranslate, kTISPropertyUnicodeKeyLayoutData,
@@ -241,6 +241,38 @@ impl PlatformInput {
                         delta,
                         touch_phase: phase,
                         modifiers: read_modifiers(native_event),
+                    })
+                }),
+                NSEventType::NSEventTypeMagnify => window_height.map(|window_height| {
+                    let phase =
+                        match native_event.phase() {
+                            NSEventPhase::NSEventPhaseMayBegin
+                            | NSEventPhase::NSEventPhaseBegan => TouchPhase::Started,
+                            NSEventPhase::NSEventPhaseEnded
+                            | NSEventPhase::NSEventPhaseCancelled => TouchPhase::Ended,
+                            _ => TouchPhase::Moved,
+                        };
+
+                    // AppKit reports an additive increment: the new scale is
+                    // the old one times `1 + magnification`. `PinchEvent`
+                    // wants that multiplier directly. The begin and end
+                    // events carry no magnification of their own.
+                    let delta = if phase == TouchPhase::Moved {
+                        1.0 + native_event.magnification() as f32
+                    } else {
+                        1.0
+                    };
+
+                    Self::Pinch(PinchEvent {
+                        position: point(
+                            px(native_event.locationInWindow().x as f32),
+                            window_height - px(native_event.locationInWindow().y as f32),
+                        ),
+                        delta,
+                        // Filled in by `Window`, which accumulates the deltas.
+                        scale: 1.0,
+                        modifiers: read_modifiers(native_event),
+                        phase,
                     })
                 }),
                 NSEventType::NSLeftMouseDragged

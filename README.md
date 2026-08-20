@@ -1,3 +1,9 @@
+> **This is a fork.** Upstream GPUI is developed by Zed Industries at
+> [zed-industries/zed](https://github.com/zed-industries/zed); this repository
+> adds pinch/magnify gesture support on top of the published 0.2.2 release.
+> See [`UPSTREAM.md`](UPSTREAM.md) for provenance and
+> [Pinch gestures](#pinch-gestures) for the addition.
+
 # Welcome to GPUI!
 
 GPUI is a hybrid immediate and retained mode, GPU accelerated, UI framework
@@ -64,3 +70,43 @@ In addition to the systems above, GPUI provides a range of smaller services that
 - The `[gpui::test]` macro provides a convenient way to write tests for your GPUI applications. Tests also have their own kind of context, a `TestAppContext` which provides ways of simulating common platform input. See `app::test_context` and `test` modules for more details.
 
 Currently, the best way to learn about these APIs is to read the Zed source code, ask us about it at a fireside hack, or drop a question in the [Zed Discord](https://zed.dev/community-links). We're working on improving the documentation, creating more examples, and will be publishing more guides to GPUI on our [blog](https://zed.dev/blog).
+
+
+## Pinch gestures
+
+This fork adds a `PinchEvent` alongside `ScrollWheelEvent`, so trackpad
+pinch-to-zoom can be handled directly instead of being approximated with
+modifier+scroll:
+
+```rust
+div().on_pinch(|event: &PinchEvent, _window, _cx| {
+    // `delta` is the multiplicative change since the previous event of this
+    // gesture, so this is all a zoomable view needs:
+    zoom *= event.delta;
+
+    // `scale` is the cumulative change since the gesture began (1.0 at
+    // `TouchPhase::Started`), for views that would rather snapshot their
+    // starting zoom and multiply once.
+    // `position` is the gesture centroid, for zooming about the fingers.
+});
+```
+
+Platforms report magnification in different terms — macOS sends a per-event
+increment, Wayland an absolute scale relative to the start of the gesture — so
+both are normalised into `delta`/`scale` before dispatch. Gestures arrive as a
+`Started` event, zero or more `Moved` events, and an `Ended` event; `delta` is
+`1.0` for the first and last of those. Like scroll events, pinches are routed
+to the element under the centroid.
+
+### Platform support
+
+| Platform | Status | Mechanism |
+| --- | --- | --- |
+| macOS | Supported | `magnifyWithEvent:` / `NSEventTypeMagnify` |
+| Linux/Wayland | Supported | `zwp_pointer_gestures_v1` pinch, when the compositor advertises it |
+| Linux/X11 | Not available | XI2 has no pinch gesture; touchpad pinches are never forwarded to X11 clients |
+| Windows | Not implemented | Would need `WM_POINTER` / Direct Manipulation |
+
+Because two of the four platforms cannot deliver a pinch, applications should
+keep a modifier+scroll zoom path as a fallback rather than relying on
+`on_pinch` alone.

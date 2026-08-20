@@ -15,7 +15,7 @@ name = "gpui"
 version = "0.2.2"
 authors = ["Nathan Sobo <nathan@zed.dev>"]
 build = "build.rs"
-publish = true
+publish = false
 autolib = false
 autobins = false
 autoexamples = false
@@ -31,7 +31,7 @@ keywords = [
 ]
 categories = ["gui"]
 license = "Apache-2.0"
-repository = "https://github.com/zed-industries/zed"
+repository = "https://github.com/IAmJSD/gpui"
 resolver = "2"
 
 [features]
@@ -227,6 +227,11 @@ path = "examples/window_shadow.rs"
 [[test]]
 name = "action_macros"
 path = "tests/action_macros.rs"
+
+[[test]]
+name = "pinch"
+path = "tests/pinch.rs"
+required-features = ["test-support"]
 
 [dependencies.anyhow]
 version = "1.0.86"

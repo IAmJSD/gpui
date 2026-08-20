@@ -170,6 +170,13 @@ unsafe fn build_classes() {
                     handle_view_event as extern "C" fn(&Object, Sel, id),
                 );
                 decl.add_method(
+                    // AppKit only routes magnify events to views that respond
+                    // to this selector, so registering it is what enables
+                    // pinch gestures at all.
+                    sel!(magnifyWithEvent:),
+                    handle_view_event as extern "C" fn(&Object, Sel, id),
+                );
+                decl.add_method(
                     sel!(flagsChanged:),
                     handle_view_event as extern "C" fn(&Object, Sel, id),
                 );

@@ -77,7 +77,7 @@ impl Deref for ModifiersChangedEvent {
 
 /// The phase of a touch motion event.
 /// Based on the winit enum of the same name.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum TouchPhase {
     /// The touch started.
     Started,
@@ -390,6 +390,67 @@ impl Deref for ScrollWheelEvent {
     }
 }
 
+/// A pinch/magnify gesture from a trackpad or touchscreen.
+///
+/// Gestures arrive as a `Started` event, zero or more `Moved` events, and an
+/// `Ended` event. Platforms report magnification differently (macOS sends a
+/// per-event increment, Wayland an absolute scale), so both forms are
+/// normalised here: `delta` is always the multiplicative change since the
+/// previous event of this gesture and `scale` the cumulative change since it
+/// began. To zoom a view, multiply by `delta` on every event.
+///
+/// Only macOS and Wayland deliver these. X11 has no pinch gesture in XI2, so
+/// applications that must support it should keep a modifier+scroll fallback.
+#[derive(Clone, Debug)]
+pub struct PinchEvent {
+    /// The centroid of the gesture, in window coordinates.
+    pub position: Point<Pixels>,
+
+    /// The multiplicative change in scale since the previous event of this
+    /// gesture. 1.0 means no change; it is always 1.0 for the `Started` and
+    /// `Ended` phases.
+    pub delta: f32,
+
+    /// The cumulative scale relative to the start of the gesture, so 1.0 when
+    /// the gesture begins. Filled in by the window; platform backends only
+    /// need to supply `delta`.
+    pub scale: f32,
+
+    /// The modifiers that were held down during the gesture.
+    pub modifiers: Modifiers,
+
+    /// The phase of the gesture.
+    pub phase: TouchPhase,
+}
+
+impl Default for PinchEvent {
+    fn default() -> Self {
+        Self {
+            position: Point::default(),
+            delta: 1.0,
+            scale: 1.0,
+            modifiers: Modifiers::default(),
+            phase: TouchPhase::default(),
+        }
+    }
+}
+
+impl Sealed for PinchEvent {}
+impl InputEvent for PinchEvent {
+    fn to_platform_input(self) -> PlatformInput {
+        PlatformInput::Pinch(self)
+    }
+}
+impl MouseEvent for PinchEvent {}
+
+impl Deref for PinchEvent {
+    type Target = Modifiers;
+
+    fn deref(&self) -> &Self::Target {
+        &self.modifiers
+    }
+}
+
 /// The scroll delta for a scroll wheel event.
 #[derive(Clone, Copy, Debug)]
 pub enum ScrollDelta {
@@ -561,6 +622,8 @@ pub enum PlatformInput {
     MouseExited(MouseExitEvent),
     /// The scroll wheel was used.
     ScrollWheel(ScrollWheelEvent),
+    /// A pinch/magnify gesture was performed on a trackpad or touchscreen.
+    Pinch(PinchEvent),
     /// Files were dragged and dropped onto the window.
     FileDrop(FileDropEvent),
 }
@@ -576,6 +639,7 @@ impl PlatformInput {
             PlatformInput::MouseMove(event) => Some(event),
             PlatformInput::MouseExited(event) => Some(event),
             PlatformInput::ScrollWheel(event) => Some(event),
+            PlatformInput::Pinch(event) => Some(event),
             PlatformInput::FileDrop(event) => Some(event),
         }
     }
@@ -590,6 +654,7 @@ impl PlatformInput {
             PlatformInput::MouseMove(_) => None,
             PlatformInput::MouseExited(_) => None,
             PlatformInput::ScrollWheel(_) => None,
+            PlatformInput::Pinch(_) => None,
             PlatformInput::FileDrop(_) => None,
         }
     }
