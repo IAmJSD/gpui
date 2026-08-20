@@ -101,3 +101,65 @@ fn test_pinch_outside_the_element_is_not_delivered(cx: &mut TestAppContext) {
 
     assert!(log.borrow().is_empty());
 }
+
+/// Records the pressure of every mouse event an element sees.
+struct PressureView(Rc<RefCell<Vec<f32>>>);
+
+impl Render for PressureView {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let down = self.0.clone();
+        let moved = self.0.clone();
+        div()
+            .size_full()
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                move |e: &gpui::MouseDownEvent, _, _| down.borrow_mut().push(e.pressure),
+            )
+            .on_mouse_move(move |e: &gpui::MouseMoveEvent, _, _| {
+                moved.borrow_mut().push(e.pressure)
+            })
+    }
+}
+
+#[gpui::test]
+fn test_pressure_reaches_handlers(cx: &mut TestAppContext) {
+    let cx = cx.add_empty_window();
+    let log: Rc<RefCell<Vec<f32>>> = Default::default();
+
+    let view_log = log.clone();
+    cx.draw(point(px(0.), px(0.)), size(px(100.), px(100.)), |_, cx| {
+        cx.new(|_| PressureView(view_log))
+    });
+
+    cx.simulate_event(gpui::MouseDownEvent {
+        position: point(px(50.), px(50.)),
+        button: gpui::MouseButton::Left,
+        modifiers: Default::default(),
+        click_count: 1,
+        first_mouse: false,
+        pressure: 0.42,
+    });
+    cx.simulate_event(gpui::MouseMoveEvent {
+        position: point(px(60.), px(50.)),
+        pressed_button: Some(gpui::MouseButton::Left),
+        modifiers: Default::default(),
+        pressure: 0.9,
+    });
+
+    assert_eq!(log.borrow().as_slice(), &[0.42, 0.9]);
+}
+
+#[gpui::test]
+fn test_a_mouse_reports_full_pressure(cx: &mut TestAppContext) {
+    // The default has to be 1.0, not 0.0: a brush that multiplies its
+    // opacity by pressure would paint nothing at all otherwise.
+    let cx = cx.add_empty_window();
+    let log: Rc<RefCell<Vec<f32>>> = Default::default();
+    let view_log = log.clone();
+    cx.draw(point(px(0.), px(0.)), size(px(100.), px(100.)), |_, cx| {
+        cx.new(|_| PressureView(view_log))
+    });
+    // The convenience helpers are what a mouse-driven test uses.
+    cx.simulate_mouse_move(point(px(50.), px(50.)), None, Default::default());
+    assert_eq!(log.borrow().as_slice(), &[1.0]);
+}

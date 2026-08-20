@@ -1124,6 +1124,8 @@ impl X11Client {
                             modifiers,
                             click_count: current_count,
                             first_mouse: false,
+                            // A mouse reports full pressure; tablets override this.
+                            pressure: 1.0,
                         }));
                     }
                     Some(ButtonOrScroll::Scroll(direction)) => {
@@ -1169,6 +1171,8 @@ impl X11Client {
                             position,
                             modifiers,
                             click_count,
+                            // A mouse reports full pressure; tablets override this.
+                            pressure: 1.0,
                         }));
                     }
                     Some(ButtonOrScroll::Scroll(_)) => {}
@@ -1192,6 +1196,8 @@ impl X11Client {
                         position,
                         pressed_button,
                         modifiers,
+                        // A mouse reports full pressure; tablets override this.
+                        pressure: 1.0,
                     }));
                 }
 

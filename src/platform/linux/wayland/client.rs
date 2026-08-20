@@ -1679,6 +1679,8 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandClientStatePtr {
                         position: state.mouse_location.unwrap(),
                         pressed_button: state.button_pressed,
                         modifiers: state.modifiers,
+                        // A mouse reports full pressure; tablets override this.
+                        pressure: 1.0,
                     });
                     drop(state);
                     window.handle_input(input);
@@ -1745,6 +1747,8 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandClientStatePtr {
                                 modifiers: state.modifiers,
                                 click_count: state.click.current_count,
                                 first_mouse: state.enter_token.take().is_some(),
+                                // A mouse reports full pressure; tablets override this.
+                                pressure: 1.0,
                             });
                             drop(state);
                             window.handle_input(input);
@@ -1759,6 +1763,8 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandClientStatePtr {
                                 position: state.mouse_location.unwrap(),
                                 modifiers: state.modifiers,
                                 click_count: state.click.current_count,
+                                // A mouse reports full pressure; tablets override this.
+                                pressure: 1.0,
                             });
                             drop(state);
                             window.handle_input(input);

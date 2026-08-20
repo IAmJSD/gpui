@@ -105,6 +105,11 @@ pub struct MouseDownEvent {
 
     /// Whether this is the first, focusing click.
     pub first_mouse: bool,
+
+    /// Stylus pressure, 0.0..=1.0. Always 1.0 for a mouse, and on
+    /// platforms whose tablet input is not wired up, so a caller can
+    /// multiply by it unconditionally.
+    pub pressure: f32,
 }
 
 impl Sealed for MouseDownEvent {}
@@ -129,6 +134,9 @@ pub struct MouseUpEvent {
 
     /// The number of times the button has been clicked.
     pub click_count: usize,
+
+    /// Stylus pressure, 0.0..=1.0. See [`MouseDownEvent::pressure`].
+    pub pressure: f32,
 }
 
 impl Sealed for MouseUpEvent {}
@@ -341,6 +349,9 @@ pub struct MouseMoveEvent {
 
     /// The modifiers that were held down when the mouse was moved.
     pub modifiers: Modifiers,
+
+    /// Stylus pressure, 0.0..=1.0. See [`MouseDownEvent::pressure`].
+    pub pressure: f32,
 }
 
 impl Sealed for MouseMoveEvent {}

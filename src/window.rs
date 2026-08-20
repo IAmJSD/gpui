@@ -3650,6 +3650,8 @@ impl Window {
                         position,
                         pressed_button: Some(MouseButton::Left),
                         modifiers: Modifiers::default(),
+                        // A mouse reports full pressure; tablets override this.
+                        pressure: 1.0,
                     })
                 }
                 FileDropEvent::Pending { position } => {
@@ -3658,6 +3660,8 @@ impl Window {
                         position,
                         pressed_button: Some(MouseButton::Left),
                         modifiers: Modifiers::default(),
+                        // A mouse reports full pressure; tablets override this.
+                        pressure: 1.0,
                     })
                 }
                 FileDropEvent::Submit { position } => {
@@ -3668,6 +3672,8 @@ impl Window {
                         position,
                         modifiers: Modifiers::default(),
                         click_count: 1,
+                        // A mouse reports full pressure; tablets override this.
+                        pressure: 1.0,
                     })
                 }
                 FileDropEvent::Exited => {

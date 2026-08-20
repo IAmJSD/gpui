@@ -45,3 +45,5 @@ merges are a re-vendor rather than a `git merge`.
 
 - **Pinch/magnify gesture support.** See `README.md` for the API and the
   per-platform support matrix.
+- **Stylus pressure** on the three mouse events, with the macOS backend
+  wired up. Also in `README.md`.

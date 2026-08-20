@@ -733,6 +733,7 @@ impl VisualTestContext {
             position,
             modifiers,
             pressed_button: button.into(),
+            pressure: 1.0,
         })
     }
 
@@ -749,6 +750,7 @@ impl VisualTestContext {
             button,
             click_count: 1,
             first_mouse: false,
+            pressure: 1.0,
         })
     }
 
@@ -764,6 +766,7 @@ impl VisualTestContext {
             modifiers,
             button,
             click_count: 1,
+            pressure: 1.0,
         })
     }
 
@@ -775,12 +778,14 @@ impl VisualTestContext {
             button: MouseButton::Left,
             click_count: 1,
             first_mouse: false,
+            pressure: 1.0,
         });
         self.simulate_event(MouseUpEvent {
             position,
             modifiers,
             button: MouseButton::Left,
             click_count: 1,
+            pressure: 1.0,
         });
     }
 

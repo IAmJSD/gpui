@@ -25,6 +25,16 @@ pub(crate) const ESCAPE_KEY: u16 = 0x1b;
 const TAB_KEY: u16 = 0x09;
 const SHIFT_TAB_KEY: u16 = 0x19;
 
+/// Stylus pressure for an event, 0.0..=1.0.
+///
+/// AppKit reports 0 for an ordinary mouse click, which would silently
+/// make every brush stroke invisible, so anything at or below zero is
+/// treated as "no tablet" and reported as full pressure.
+unsafe fn read_pressure(native_event: id) -> f32 {
+    let p = unsafe { native_event.pressure() } as f32;
+    if p > 0.0 { p.min(1.0) } else { 1.0 }
+}
+
 pub fn key_to_native(key: &str) -> Cow<'_, str> {
     use cocoa::appkit::*;
     let code = match key {
@@ -158,6 +168,7 @@ impl PlatformInput {
                             modifiers: read_modifiers(native_event),
                             click_count: native_event.clickCount() as usize,
                             first_mouse: false,
+                            pressure: read_pressure(native_event),
                         })
                     })
                 }
@@ -183,6 +194,7 @@ impl PlatformInput {
                             ),
                             modifiers: read_modifiers(native_event),
                             click_count: native_event.clickCount() as usize,
+                            pressure: read_pressure(native_event),
                         })
                     })
                 }
@@ -296,6 +308,7 @@ impl PlatformInput {
                                 window_height - px(native_event.locationInWindow().y as f32),
                             ),
                             modifiers: read_modifiers(native_event),
+                            pressure: read_pressure(native_event),
                         })
                     })
                 }
@@ -307,6 +320,7 @@ impl PlatformInput {
                         ),
                         pressed_button: None,
                         modifiers: read_modifiers(native_event),
+                        pressure: read_pressure(native_event),
                     })
                 }),
                 NSEventType::NSMouseExited => window_height.map(|window_height| {

@@ -1,6 +1,7 @@
 > **This is a fork.** Upstream GPUI is developed by Zed Industries at
 > [zed-industries/zed](https://github.com/zed-industries/zed); this repository
-> adds pinch/magnify gesture support on top of the published 0.2.2 release.
+> adds pinch/magnify gestures and stylus pressure on top of the published
+> 0.2.2 release.
 > See [`UPSTREAM.md`](UPSTREAM.md) for provenance and
 > [Pinch gestures](#pinch-gestures) for the addition.
 
@@ -110,3 +111,23 @@ to the element under the centroid.
 Because two of the four platforms cannot deliver a pinch, applications should
 keep a modifier+scroll zoom path as a fallback rather than relying on
 `on_pinch` alone.
+
+
+## Stylus pressure
+
+`MouseDownEvent`, `MouseUpEvent` and `MouseMoveEvent` carry a `pressure`
+field, 0.0..=1.0. It is **1.0** for an ordinary mouse and on platforms
+whose tablet input is not wired up, so a caller can multiply by it
+unconditionally -- a brush that scaled its opacity by pressure would
+otherwise paint nothing at all on a mouse.
+
+| Platform | Status | Mechanism |
+| --- | --- | --- |
+| macOS | Supported | `NSEvent.pressure` |
+| Linux/Wayland | Not implemented | Would need `zwp_tablet_v2` |
+| Linux/X11 | Not implemented | Would need XInput2 valuators |
+| Windows | Not implemented | Would need `WM_POINTER` |
+
+AppKit reports 0 for an ordinary mouse click, which is indistinguishable
+from a stylus barely touching the tablet, so anything at or below zero is
+reported as full pressure.
