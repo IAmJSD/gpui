@@ -41,6 +41,33 @@ merges are a re-vendor rather than a `git merge`.
    against the previous baseline.
 5. `cargo test --features test-support --test pinch` must pass.
 
+## Checking the other platforms
+
+Adding a field to a shared event struct breaks every literal that builds one,
+on every platform -- and those literals are spread across `platform/mac`,
+`platform/windows` and `platform/linux`, so a clean Linux build proves very
+little. This bit us once already: the pressure field landed with `mac` only
+half-updated and `windows` not at all.
+
+Windows can be type-checked from Linux. `cargo check` never links, so the
+only obstacle is a couple of dependencies with C build scripts, and those
+only need to *succeed*:
+
+```sh
+rustup target add x86_64-pc-windows-gnu
+cargo check --target x86_64-pc-windows-gnu
+```
+
+If a C build script fails, point `CC_x86_64_pc_windows_gnu` at a wrapper that
+falls back to compiling an empty translation unit. The objects are garbage;
+nothing links them.
+
+macOS cannot be checked this way: `gpui_media` runs `bindgen` over the
+CoreMedia headers, which needs the Apple SDK. Review it by hand -- and when
+adding a field, grep for *every* literal of the struct rather than fixing the
+one the compiler happens to name first, because it reports them one file at a
+time.
+
 ## Changes in this fork
 
 - **Pinch/magnify gesture support.** See `README.md` for the API and the

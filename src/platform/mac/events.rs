@@ -220,6 +220,9 @@ impl PlatformInput {
                                 modifiers: read_modifiers(native_event),
                                 click_count: 1,
                                 first_mouse: false,
+                                // A swipe comes from a mouse or trackpad,
+                                // never a stylus.
+                                pressure: 1.0,
                             })
                         }),
                         _ => None,
