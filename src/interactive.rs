@@ -410,8 +410,10 @@ impl Deref for ScrollWheelEvent {
 /// previous event of this gesture and `scale` the cumulative change since it
 /// began. To zoom a view, multiply by `delta` on every event.
 ///
-/// Only macOS and Wayland deliver these. X11 has no pinch gesture in XI2, so
-/// applications that must support it should keep a modifier+scroll fallback.
+/// macOS, Wayland, X11 (XI 2.4, xorg-server 21.1+) and Windows touchscreens
+/// deliver these. Windows precision touchpads do not -- their pinches arrive
+/// as Ctrl+scroll -- so applications that must support pinch everywhere
+/// should keep a modifier+scroll fallback.
 #[derive(Clone, Debug)]
 pub struct PinchEvent {
     /// The centroid of the gesture, in window coordinates.

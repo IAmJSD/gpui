@@ -93,8 +93,9 @@ div().on_pinch(|event: &PinchEvent, _window, _cx| {
 ```
 
 Platforms report magnification in different terms — macOS sends a per-event
-increment, Wayland an absolute scale relative to the start of the gesture — so
-both are normalised into `delta`/`scale` before dispatch. Gestures arrive as a
+increment, Wayland and X11 an absolute scale relative to the start of the
+gesture, Windows an absolute finger distance — so all of them are normalised
+into `delta`/`scale` before dispatch. Gestures arrive as a
 `Started` event, zero or more `Moved` events, and an `Ended` event; `delta` is
 `1.0` for the first and last of those. Like scroll events, pinches are routed
 to the element under the centroid.
@@ -105,12 +106,13 @@ to the element under the centroid.
 | --- | --- | --- |
 | macOS | Supported | `magnifyWithEvent:` / `NSEventTypeMagnify` |
 | Linux/Wayland | Supported | `zwp_pointer_gestures_v1` pinch, when the compositor advertises it |
-| Linux/X11 | Not available | XI2 has no pinch gesture; touchpad pinches are never forwarded to X11 clients |
-| Windows | Not implemented | Would need `WM_POINTER` / Direct Manipulation |
+| Linux/X11 | Supported | XI 2.4 gesture events (xorg-server 21.1+, libinput); older servers deliver nothing |
+| Windows | Touchscreen only | `WM_GESTURE` / `GID_ZOOM`. Precision-touchpad pinches arrive as Ctrl+scroll instead; real touchpad pinch would need Direct Manipulation |
 
-Because two of the four platforms cannot deliver a pinch, applications should
-keep a modifier+scroll zoom path as a fallback rather than relying on
-`on_pinch` alone.
+Windows touchpads and pre-21.1 X11 servers cannot deliver a pinch, so
+applications should keep a modifier+scroll zoom path as a fallback rather
+than relying on `on_pinch` alone. (On Windows a Ctrl+scroll fallback is
+precisely the form touchpad pinches arrive in.)
 
 
 ## Stylus pressure
@@ -125,9 +127,17 @@ otherwise paint nothing at all on a mouse.
 | --- | --- | --- |
 | macOS | Supported | `NSEvent.pressure` |
 | Linux/Wayland | Not implemented | Would need `zwp_tablet_v2` |
-| Linux/X11 | Not implemented | Would need XInput2 valuators |
-| Windows | Not implemented | Would need `WM_POINTER` |
+| Linux/X11 | Supported | XInput2 "Abs Pressure" valuator |
+| Windows | Supported | `WM_POINTER` pen pressure, carried onto the synthesised mouse messages |
 
-AppKit reports 0 for an ordinary mouse click, which is indistinguishable
-from a stylus barely touching the tablet, so anything at or below zero is
-reported as full pressure.
+Two platforms cannot tell "no tablet" from "zero pressure" and report full
+pressure for both: AppKit reports 0 for an ordinary mouse click, which is
+indistinguishable from a stylus barely touching the tablet, so anything at
+or below zero is reported as full pressure, and Windows does the same for a
+zero reading, which is what a hovering pen reports. X11 identifies tablets
+by their pressure valuator, so there a hovering stylus reports its true
+(zero) pressure and only devices without the valuator report 1.0.
+
+On Windows the pen system gestures (press-and-hold for right-click, tap
+feedback, flicks) are disabled on GPUI windows, since they delay or swallow
+the pen events a drawing surface needs to receive immediately.

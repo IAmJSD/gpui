@@ -70,7 +70,19 @@ time.
 
 ## Changes in this fork
 
-- **Pinch/magnify gesture support.** See `README.md` for the API and the
-  per-platform support matrix.
-- **Stylus pressure** on the three mouse events, with the macOS backend
-  wired up. Also in `README.md`.
+- **Pinch/magnify gesture support.** Backends: macOS (`NSEventTypeMagnify`),
+  Wayland (`zwp_pointer_gestures_v1`), X11 (XI 2.4 gesture events) and
+  Windows touchscreens (`WM_GESTURE`/`GID_ZOOM`). Windows precision
+  touchpads deliver pinches as Ctrl+scroll instead and would need Direct
+  Manipulation. See `README.md` for the API and the support matrix.
+- **Stylus pressure** on the three mouse events. Backends: macOS
+  (`NSEvent.pressure`), X11 (XInput2 "Abs Pressure" valuator) and Windows
+  (`WM_POINTER` pen info, carried onto the synthesised legacy mouse
+  messages; pen system gestures are disabled per window so pen-down is
+  immediate). Wayland still reports 1.0 -- it needs `zwp_tablet_v2`. Also in
+  `README.md`.
+
+Of these backends only X11 could be exercised on real input during
+development, and only for the mouse (pressure-less) path; Xvfb cannot
+synthesise gestures or tablets. macOS, Wayland and Windows are
+compile-reviewed, Windows via the cross-check below.
