@@ -78,6 +78,7 @@ x11rb::atom_manager! {
         _NET_SUPPORTED,
         _MOTIF_WM_HINTS,
         _GTK_SHOW_WINDOW_MENU,
+        AbsPressure: b"Abs Pressure",
         _GTK_FRAME_EXTENTS,
         _GTK_EDGE_CONSTRAINTS,
         _NET_CLIENT_LIST_STACKING,
