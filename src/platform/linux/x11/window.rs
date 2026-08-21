@@ -389,6 +389,7 @@ impl X11WindowState {
         params: WindowParams,
         xcb: &Rc<XCBConnection>,
         client_side_decorations_supported: bool,
+        pinch_gestures_supported: bool,
         x_main_screen_index: usize,
         x_window: xproto::Window,
         atoms: &XcbAtoms,
@@ -610,19 +611,27 @@ impl X11WindowState {
                 ),
             )?;
 
+            let mut pointer_event_mask = xinput::XIEventMask::MOTION
+                | xinput::XIEventMask::BUTTON_PRESS
+                | xinput::XIEventMask::BUTTON_RELEASE
+                | xinput::XIEventMask::ENTER
+                | xinput::XIEventMask::LEAVE;
+            if pinch_gestures_supported {
+                // The XI 2.4 GesturePinchBegin/Update/End mask bits (an event's
+                // mask bit is 1 << its event type: 27, 28 and 29). x11rb 0.13
+                // parses the events but has no named constants for these bits,
+                // and selecting them on a pre-2.4 server would be a BadValue
+                // error, hence the version gate.
+                pointer_event_mask =
+                    pointer_event_mask | xinput::XIEventMask::from((1u32 << 27) | (1 << 28) | (1 << 29));
+            }
             check_reply(
                 || "X11 XiSelectEvents failed.",
                 xcb.xinput_xi_select_events(
                     x_window,
                     &[xinput::EventMask {
                         deviceid: XINPUT_ALL_DEVICE_GROUPS,
-                        mask: vec![
-                            xinput::XIEventMask::MOTION
-                                | xinput::XIEventMask::BUTTON_PRESS
-                                | xinput::XIEventMask::BUTTON_RELEASE
-                                | xinput::XIEventMask::ENTER
-                                | xinput::XIEventMask::LEAVE,
-                        ],
+                        mask: vec![pointer_event_mask],
                     }],
                 ),
             )?;
@@ -768,6 +777,7 @@ impl X11Window {
         params: WindowParams,
         xcb: &Rc<XCBConnection>,
         client_side_decorations_supported: bool,
+        pinch_gestures_supported: bool,
         x_main_screen_index: usize,
         x_window: xproto::Window,
         atoms: &XcbAtoms,
@@ -784,6 +794,7 @@ impl X11Window {
                 params,
                 xcb,
                 client_side_decorations_supported,
+                pinch_gestures_supported,
                 x_main_screen_index,
                 x_window,
                 atoms,

@@ -211,6 +211,11 @@ pub struct X11ClientState {
     pub(crate) cursor_cache: HashMap<CursorStyle, Option<xproto::Cursor>>,
 
     pointer_device_states: BTreeMap<xinput::DeviceId, PointerDeviceState>,
+    /// Whether the X server implements XI 2.4, and so can deliver pinch gestures.
+    xinput_pinch_gestures_supported: bool,
+    /// Scale reported by the previous pinch update, so the absolute scales X11
+    /// reports can be turned into the per-event deltas `PinchEvent` wants.
+    pinch_last_scale: f32,
 
     pub(crate) common: LinuxCommon,
     pub(crate) clipboard: Clipboard,
@@ -332,16 +337,24 @@ impl X11Client {
         xcb_connection.prefetch_extension_information(render::X11_EXTENSION_NAME)?;
         xcb_connection.prefetch_extension_information(xinput::X11_EXTENSION_NAME)?;
 
-        // Announce to X server that XInput up to 2.1 is supported. To increase this to 2.2 and
-        // beyond, support for touch events would need to be added.
+        // Announce to X server that XInput up to 2.4 is supported, for the touchpad
+        // gesture events added in 2.4. The server replies with the version it actually
+        // implements, so older servers keep working and gesture event selection is
+        // skipped for them. Touch events (2.2) are deliberately never selected on any
+        // window, so the server keeps emulating pointer events for touchscreens; a 2.2+
+        // announcement alone does not change that.
         let xinput_version = get_reply(
             || "XInput XiQueryVersion failed",
-            xcb_connection.xinput_xi_query_version(2, 1),
+            xcb_connection.xinput_xi_query_version(2, 4),
         )?;
         assert!(
             xinput_version.major_version >= 2,
             "XInput version >= 2 required."
         );
+        // Pinch events are XI 2.4's gesture support (xorg-server 21.1); on older
+        // servers selecting their masks would be a BadValue error.
+        let xinput_pinch_gestures_supported =
+            (xinput_version.major_version, xinput_version.minor_version) >= (2, 4);
 
         let pointer_device_states =
             current_pointer_device_states(&xcb_connection, &BTreeMap::new()).unwrap_or_default();
@@ -510,6 +523,8 @@ impl X11Client {
             cursor_cache: HashMap::default(),
 
             pointer_device_states,
+            xinput_pinch_gestures_supported,
+            pinch_last_scale: 1.0,
 
             clipboard,
             clipboard_item: None,
@@ -1214,6 +1229,78 @@ impl X11Client {
                     }
                 }
             }
+            Event::XinputGesturePinchBegin(event) => {
+                let window = self.get_window(event.event)?;
+                let mut state = self.0.borrow_mut();
+                let modifiers = modifiers_from_xinput_info(event.mods);
+                state.modifiers = modifiers;
+                state.pinch_last_scale = 1.0;
+                let position = point(
+                    px(event.event_x as f32 / u16::MAX as f32 / state.scale_factor),
+                    px(event.event_y as f32 / u16::MAX as f32 / state.scale_factor),
+                );
+                drop(state);
+                window.handle_input(PlatformInput::Pinch(crate::PinchEvent {
+                    position,
+                    delta: 1.0,
+                    // Accumulated by `Window`.
+                    scale: 1.0,
+                    modifiers,
+                    phase: TouchPhase::Started,
+                }));
+            }
+            Event::XinputGesturePinchUpdate(event) => {
+                let window = self.get_window(event.event)?;
+                let mut state = self.0.borrow_mut();
+                let modifiers = modifiers_from_xinput_info(event.mods);
+                state.modifiers = modifiers;
+                // X11 reports `scale` as an absolute multiplier relative to the
+                // start of the gesture; `PinchEvent::delta` is the change since
+                // the previous event, so divide through by what we last saw.
+                let scale = event.scale as f32 / u16::MAX as f32;
+                // Guard against a zero or negative scale, which would
+                // otherwise poison every later delta.
+                if !(scale.is_finite() && scale > 0.0) {
+                    return Some(());
+                }
+                let delta = scale / state.pinch_last_scale;
+                state.pinch_last_scale = scale;
+                let position = point(
+                    px(event.event_x as f32 / u16::MAX as f32 / state.scale_factor),
+                    px(event.event_y as f32 / u16::MAX as f32 / state.scale_factor),
+                );
+                drop(state);
+                window.handle_input(PlatformInput::Pinch(crate::PinchEvent {
+                    position,
+                    delta,
+                    // Accumulated by `Window`.
+                    scale: 1.0,
+                    modifiers,
+                    phase: TouchPhase::Moved,
+                }));
+            }
+            // A cancelled pinch (`GESTURE_PINCH_CANCELLED` in `event.flags`)
+            // still ends the gesture, so it is not distinguished here.
+            Event::XinputGesturePinchEnd(event) => {
+                let window = self.get_window(event.event)?;
+                let mut state = self.0.borrow_mut();
+                let modifiers = modifiers_from_xinput_info(event.mods);
+                state.modifiers = modifiers;
+                state.pinch_last_scale = 1.0;
+                let position = point(
+                    px(event.event_x as f32 / u16::MAX as f32 / state.scale_factor),
+                    px(event.event_y as f32 / u16::MAX as f32 / state.scale_factor),
+                );
+                drop(state);
+                window.handle_input(PlatformInput::Pinch(crate::PinchEvent {
+                    position,
+                    delta: 1.0,
+                    // Accumulated by `Window`.
+                    scale: 1.0,
+                    modifiers,
+                    phase: TouchPhase::Ended,
+                }));
+            }
             Event::XinputEnter(event) if event.mode == xinput::NotifyMode::NORMAL => {
                 let window = self.get_window(event.event)?;
                 window.set_hovered(true);
@@ -1471,6 +1558,7 @@ impl LinuxClient for X11Client {
             params,
             &state.xcb_connection,
             state.client_side_decorations_supported,
+            state.xinput_pinch_gestures_supported,
             state.x_root_index,
             x_window,
             &state.atoms,
