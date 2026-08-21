@@ -10,7 +10,7 @@ use windows::{
         UI::{
             Controls::*,
             HiDpi::*,
-            Input::{Ime::*, KeyboardAndMouse::*, Pointer::*},
+            Input::{Ime::*, KeyboardAndMouse::*, Pointer::*, Touch::*},
             WindowsAndMessaging::*,
         },
     },
@@ -91,6 +91,7 @@ impl WindowsWindowInner {
             WM_XBUTTONUP => {
                 self.handle_xbutton_msg(handle, wparam, lparam, Self::handle_mouse_up_msg)
             }
+            WM_GESTURE => self.handle_gesture_msg(handle, lparam),
             WM_MOUSEWHEEL => self.handle_mouse_wheel_msg(handle, wparam, lparam),
             WM_MOUSEHWHEEL => self.handle_mouse_horizontal_wheel_msg(handle, wparam, lparam),
             WM_SYSKEYDOWN => self.handle_syskeydown_msg(handle, wparam, lparam),
@@ -324,6 +325,86 @@ impl WindowsWindowInner {
             }
         }
         1.0
+    }
+
+    /// Handles `WM_GESTURE`, which is how touchscreen pinches arrive here:
+    /// this window handles neither `WM_TOUCH` nor touch `WM_POINTER*`
+    /// messages, so `DefWindowProc` coalesces touch input into gestures.
+    /// `GID_ZOOM` reports the absolute distance between the fingers, and the
+    /// ratio of successive distances is the multiplicative `delta` that
+    /// `PinchEvent` wants.
+    fn handle_gesture_msg(&self, handle: HWND, lparam: LPARAM) -> Option<isize> {
+        let gesture_handle = HGESTUREINFO(lparam.0 as _);
+        let mut info = GESTUREINFO {
+            cbSize: std::mem::size_of::<GESTUREINFO>() as u32,
+            ..Default::default()
+        };
+        // On failure fall through to DefWindowProc, which closes the handle.
+        unsafe { GetGestureInfo(gesture_handle, &mut info) }.ok()?;
+
+        if info.dwID == GID_END.0 {
+            // GID_END closes whatever gesture was in flight and must always
+            // reach DefWindowProc; it ends a pinch whose last GID_ZOOM did
+            // not carry GF_END.
+            if self.state.borrow_mut().last_zoom_distance.take().is_some() {
+                self.emit_pinch(handle, info.ptsLocation, 1.0, TouchPhase::Ended);
+            }
+            return None;
+        }
+        if info.dwID != GID_ZOOM.0 {
+            return None;
+        }
+
+        // The low dword of ullArguments is the distance between the fingers.
+        let distance = info.ullArguments as u32;
+        let mut lock = self.state.borrow_mut();
+        let (delta, phase) = match lock.last_zoom_distance {
+            _ if info.dwFlags & GF_BEGIN != 0 => (1.0, TouchPhase::Started),
+            // Guard both distances so a degenerate zero can never produce a
+            // zero or infinite delta, which would poison the caller's zoom.
+            Some(last) if last > 0 && distance > 0 => {
+                (distance as f32 / last as f32, TouchPhase::Moved)
+            }
+            Some(_) => (1.0, TouchPhase::Moved),
+            // A GID_ZOOM without GF_BEGIN and with no pinch in flight;
+            // start one rather than drop it.
+            None => (1.0, TouchPhase::Started),
+        };
+        lock.last_zoom_distance = Some(distance);
+        drop(lock);
+        self.emit_pinch(handle, info.ptsLocation, delta, phase);
+        if info.dwFlags & GF_END != 0 {
+            self.state.borrow_mut().last_zoom_distance = None;
+            self.emit_pinch(handle, info.ptsLocation, 1.0, TouchPhase::Ended);
+        }
+        // Handled gestures must close the info handle themselves.
+        unsafe { CloseGestureInfoHandle(gesture_handle).log_err() };
+        Some(0)
+    }
+
+    fn emit_pinch(&self, handle: HWND, location: POINTS, delta: f32, phase: TouchPhase) {
+        let mut lock = self.state.borrow_mut();
+        let scale_factor = lock.scale_factor;
+        let Some(mut func) = lock.callbacks.input.take() else {
+            return;
+        };
+        drop(lock);
+
+        // The gesture location is the zoom centre, in screen coordinates.
+        let mut center = POINT {
+            x: location.x as i32,
+            y: location.y as i32,
+        };
+        unsafe { ScreenToClient(handle, &mut center).ok().log_err() };
+        func(PlatformInput::Pinch(PinchEvent {
+            position: logical_point(center.x as f32, center.y as f32, scale_factor),
+            delta,
+            // Accumulated by `Window`.
+            scale: 1.0,
+            modifiers: current_modifiers(),
+            phase,
+        }));
+        self.state.borrow_mut().callbacks.input = Some(func);
     }
 
     fn handle_mouse_move_msg(&self, handle: HWND, lparam: LPARAM, wparam: WPARAM) -> Option<isize> {
