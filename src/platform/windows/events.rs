@@ -92,6 +92,7 @@ impl WindowsWindowInner {
                 self.handle_xbutton_msg(handle, wparam, lparam, Self::handle_mouse_up_msg)
             }
             WM_GESTURE => self.handle_gesture_msg(handle, lparam),
+            DM_POINTERHITTEST => self.handle_pointer_hit_test_msg(wparam),
             WM_MOUSEWHEEL => self.handle_mouse_wheel_msg(handle, wparam, lparam),
             WM_MOUSEHWHEEL => self.handle_mouse_horizontal_wheel_msg(handle, wparam, lparam),
             WM_SYSKEYDOWN => self.handle_syskeydown_msg(handle, wparam, lparam),
@@ -192,6 +193,15 @@ impl WindowsWindowInner {
         }
         drop(lock);
 
+        if let Some(direct_manipulation) = &self.direct_manipulation {
+            direct_manipulation.set_viewport_size(RECT {
+                left: 0,
+                top: 0,
+                right: width,
+                bottom: height,
+            });
+        }
+
         self.handle_size_change(new_size, scale_factor, should_resize_renderer);
         Some(0)
     }
@@ -241,14 +251,36 @@ impl WindowsWindowInner {
     }
 
     fn handle_timer_msg(&self, handle: HWND, wparam: WPARAM) -> Option<isize> {
-        if wparam.0 == SIZE_MOVE_LOOP_TIMER_ID {
-            for runnable in self.main_receiver.drain() {
-                runnable.run();
+        match wparam.0 {
+            SIZE_MOVE_LOOP_TIMER_ID => {
+                for runnable in self.main_receiver.drain() {
+                    runnable.run();
+                }
+                self.handle_paint_msg(handle)
             }
-            self.handle_paint_msg(handle)
-        } else {
-            None
+            DIRECT_MANIPULATION_TIMER_ID => {
+                let direct_manipulation = self.direct_manipulation.as_ref()?;
+                if !direct_manipulation.update() {
+                    direct_manipulation.stop_updating();
+                }
+                Some(0)
+            }
+            _ => None,
         }
+    }
+
+    /// Handles `DM_POINTERHITTEST`, which asks whether this window wants to
+    /// take a contact for a manipulation. Claiming it is what turns a
+    /// precision-touchpad pinch into a `PinchEvent` instead of Ctrl+scroll --
+    /// and, as the same claim covers pans, what makes `direct_manipulation`
+    /// responsible for the scrolling too.
+    fn handle_pointer_hit_test_msg(&self, wparam: WPARAM) -> Option<isize> {
+        // Never handled: DefWindowProc still has routing of its own to do for
+        // contacts that turn out not to be ours.
+        self.direct_manipulation
+            .as_ref()?
+            .set_contact(wparam.loword() as u32);
+        None
     }
 
     fn handle_paint_msg(&self, handle: HWND) -> Option<isize> {

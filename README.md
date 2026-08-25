@@ -107,12 +107,33 @@ to the element under the centroid.
 | macOS | Supported | `magnifyWithEvent:` / `NSEventTypeMagnify` |
 | Linux/Wayland | Supported | `zwp_pointer_gestures_v1` pinch, when the compositor advertises it |
 | Linux/X11 | Supported | XI 2.4 gesture events (xorg-server 21.1+, libinput); older servers deliver nothing |
-| Windows | Touchscreen only | `WM_GESTURE` / `GID_ZOOM`. Precision-touchpad pinches arrive as Ctrl+scroll instead; real touchpad pinch would need Direct Manipulation |
+| Windows | Touchscreen; touchpad opt-in | `WM_GESTURE` / `GID_ZOOM`; precision touchpads need Direct Manipulation, see below |
 
-Windows touchpads and pre-21.1 X11 servers cannot deliver a pinch, so
-applications should keep a modifier+scroll zoom path as a fallback rather
-than relying on `on_pinch` alone. (On Windows a Ctrl+scroll fallback is
-precisely the form touchpad pinches arrive in.)
+Pre-21.1 X11 servers cannot deliver a pinch at all, and on Windows a
+precision touchpad delivers one only with the opt-in below, so applications
+should keep a modifier+scroll zoom path as a fallback rather than relying on
+`on_pinch` alone. (On Windows a Ctrl+scroll fallback is precisely the form
+touchpad pinches otherwise arrive in.)
+
+### Precision touchpads on Windows
+
+`WM_GESTURE` covers touchscreens only. A precision touchpad's contacts go to
+the pointer input stack instead, and a window that does nothing with them
+gets the legacy fallback: `WM_MOUSEWHEEL` for a two-finger pan, Ctrl+
+`WM_MOUSEWHEEL` for a pinch. Direct Manipulation is the only interface that
+hands over the real gesture.
+
+Claiming it is all-or-nothing. `DM_POINTERHITTEST` arrives before the gesture
+has been classified, so a window that takes the contact to get pinches takes
+the pans with it and stops receiving `WM_MOUSEWHEEL` for them. This fork
+therefore replaces both: the manipulation's scale becomes a `PinchEvent` and
+its translation a pixel-precise `ScrollWheelEvent`, with inertia on each.
+
+Because that puts new code in the path of ordinary scrolling, it is off by
+default. Set `GPUI_ENABLE_DIRECT_MANIPULATION` to `1` or `true` to turn it
+on; anything else, or a failure to set Direct Manipulation up, leaves the
+window on the Ctrl+scroll fallback. It has not been exercised on real
+hardware -- see [`UPSTREAM.md`](UPSTREAM.md).
 
 
 ## Stylus pressure

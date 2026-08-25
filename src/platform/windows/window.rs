@@ -82,6 +82,9 @@ pub(crate) struct WindowsWindowInner {
     pub(crate) validation_number: usize,
     pub(crate) main_receiver: flume::Receiver<Runnable>,
     pub(crate) platform_window_handle: HWND,
+    /// Precision-touchpad gestures, when the opt-in is set. `None` leaves the
+    /// window on the legacy Ctrl+scroll fallback.
+    pub(crate) direct_manipulation: Option<DirectManipulation>,
 }
 
 impl WindowsWindowState {
@@ -216,6 +219,10 @@ impl WindowsWindowState {
 }
 
 impl WindowsWindowInner {
+    pub(crate) fn hwnd(&self) -> HWND {
+        self.hwnd
+    }
+
     fn new(context: &mut WindowCreateContext, hwnd: HWND, cs: &CREATESTRUCTW) -> Result<Rc<Self>> {
         let state = RefCell::new(WindowsWindowState::new(
             hwnd,
@@ -242,6 +249,7 @@ impl WindowsWindowInner {
             main_receiver: context.main_receiver.clone(),
             platform_window_handle: context.platform_window_handle,
             system_settings: RefCell::new(WindowsSystemSettings::new(context.display)),
+            direct_manipulation: DirectManipulation::new(hwnd, this.clone()),
         }))
     }
 

@@ -71,10 +71,20 @@ time.
 ## Changes in this fork
 
 - **Pinch/magnify gesture support.** Backends: macOS (`NSEventTypeMagnify`),
-  Wayland (`zwp_pointer_gestures_v1`), X11 (XI 2.4 gesture events) and
-  Windows touchscreens (`WM_GESTURE`/`GID_ZOOM`). Windows precision
-  touchpads deliver pinches as Ctrl+scroll instead and would need Direct
-  Manipulation. See `README.md` for the API and the support matrix.
+  Wayland (`zwp_pointer_gestures_v1`), X11 (XI 2.4 gesture events), Windows
+  touchscreens (`WM_GESTURE`/`GID_ZOOM`) and Windows precision touchpads
+  (Direct Manipulation). See `README.md` for the API and the support matrix.
+
+  The touchpad path is opt-in, behind `GPUI_ENABLE_DIRECT_MANIPULATION`, and
+  the opt-in is the point rather than an afterthought. `DM_POINTERHITTEST`
+  arrives before Windows has classified the gesture, so claiming the contact
+  to get a pinch claims two-finger pans as well and suppresses the
+  `WM_MOUSEWHEEL` they would otherwise produce; `direct_manipulation.rs`
+  consequently synthesises the scrolling too. Replacing the scroll path of a
+  platform that cannot be run here, on the strength of a cross-compile, is
+  not something to do by default -- so it is off until someone has driven it
+  on real hardware, and flipping the default is a one-line change in
+  `DirectManipulation::new` once they have.
 - **Stylus pressure** on the three mouse events. Backends: macOS
   (`NSEvent.pressure`), X11 (XInput2 "Abs Pressure" valuator), Windows
   (`WM_POINTER` pen info, carried onto the synthesised legacy mouse
@@ -95,4 +105,7 @@ time.
 Of these backends only X11 could be exercised on real input during
 development, and only for the mouse (pressure-less) path; Xvfb cannot
 synthesise gestures or tablets. macOS, Wayland and Windows are
-compile-reviewed, Windows via the cross-check below.
+compile-reviewed, Windows via the cross-check below. Direct Manipulation is
+the least exercised of the lot -- a cross-compile says nothing about whether
+a COM callback sequence is right -- which is why it is the one thing here
+that has to be asked for.
