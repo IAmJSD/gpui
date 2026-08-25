@@ -76,11 +76,21 @@ time.
   touchpads deliver pinches as Ctrl+scroll instead and would need Direct
   Manipulation. See `README.md` for the API and the support matrix.
 - **Stylus pressure** on the three mouse events. Backends: macOS
-  (`NSEvent.pressure`), X11 (XInput2 "Abs Pressure" valuator) and Windows
+  (`NSEvent.pressure`), X11 (XInput2 "Abs Pressure" valuator), Windows
   (`WM_POINTER` pen info, carried onto the synthesised legacy mouse
   messages; pen system gestures are disabled per window so pen-down is
-  immediate). Wayland still reports 1.0 -- it needs `zwp_tablet_v2`. Also in
-  `README.md`.
+  immediate) and Wayland (`zwp_tablet_v2`). Also in `README.md`.
+
+  Wayland is the odd one out: tablet input there is a separate protocol
+  rather than valuators on the pointer, and binding it stops the compositor
+  emulating pointer events for the tool, so the whole mouse event stream is
+  synthesised from `zwp_tablet_tool_v2` (see `README.md` for the mapping).
+  Tool events are frame-batched -- the `pressure` for a tip-down arrives
+  *after* the `down` -- so they are accumulated in `TabletFrame` and
+  dispatched together on `frame`. Tablet pads are ignored, but their
+  `zwp_tablet_pad_*` objects still need `Dispatch` impls: the seat announces
+  pads unconditionally and a `new_id` with no registered child handler
+  panics the queue.
 
 Of these backends only X11 could be exercised on real input during
 development, and only for the mouse (pressure-less) path; Xvfb cannot

@@ -52,6 +52,11 @@ use wayland_protocols::wp::primary_selection::zv1::client::{
     zwp_primary_selection_device_manager_v1, zwp_primary_selection_device_v1,
     zwp_primary_selection_source_v1,
 };
+use wayland_protocols::wp::tablet::zv2::client::{
+    zwp_tablet_manager_v2, zwp_tablet_pad_group_v2, zwp_tablet_pad_ring_v2,
+    zwp_tablet_pad_strip_v2, zwp_tablet_pad_v2, zwp_tablet_seat_v2, zwp_tablet_tool_v2,
+    zwp_tablet_v2,
+};
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
     ContentHint, ContentPurpose,
 };
@@ -121,6 +126,7 @@ pub struct Globals {
     pub blur_manager: Option<org_kde_kwin_blur_manager::OrgKdeKwinBlurManager>,
     pub text_input_manager: Option<zwp_text_input_manager_v3::ZwpTextInputManagerV3>,
     pub pointer_gestures: Option<zwp_pointer_gestures_v1::ZwpPointerGesturesV1>,
+    pub tablet_manager: Option<zwp_tablet_manager_v2::ZwpTabletManagerV2>,
     pub executor: ForegroundExecutor,
 }
 
@@ -161,6 +167,9 @@ impl Globals {
             // Optional: not every compositor implements pointer gestures,
             // and it is only ever advertised on touchpad-capable seats.
             pointer_gestures: globals.bind(&qh, 1..=3, ()).ok(),
+            // Optional in the same way: only seats with a graphics tablet
+            // attached advertise it.
+            tablet_manager: globals.bind(&qh, 1..=1, ()).ok(),
             executor,
             qh,
         }
@@ -209,6 +218,9 @@ pub(crate) struct WaylandClientState {
     /// Scale reported by the previous pinch update, so absolute Wayland
     /// scales can be turned into the per-event deltas `PinchEvent` wants.
     pinch_last_scale: f32,
+    tablet_seat: Option<zwp_tablet_seat_v2::ZwpTabletSeatV2>,
+    /// Every tablet tool the seat has announced, keyed by the tool object.
+    tablet_tools: HashMap<ObjectId, TabletTool>,
     data_device: Option<wl_data_device::WlDataDevice>,
     primary_selection: Option<zwp_primary_selection_device_v1::ZwpPrimarySelectionDeviceV1>,
     text_input: Option<zwp_text_input_v3::ZwpTextInputV3>,
@@ -261,6 +273,122 @@ pub struct ClickState {
     last_click: Instant,
     last_location: Point<Pixels>,
     current_count: usize,
+}
+
+impl ClickState {
+    /// Folds a press of `button` at `location` into the current double-click
+    /// run and returns the click count to report with it.
+    fn press(&mut self, button: MouseButton, location: Point<Pixels>) -> usize {
+        if self.last_click.elapsed() < DOUBLE_CLICK_INTERVAL
+            && self
+                .last_mouse_button
+                .is_some_and(|prev_button| prev_button == button)
+            && is_within_click_distance(self.last_location, location)
+        {
+            self.current_count += 1;
+        } else {
+            self.current_count = 1;
+        }
+
+        self.last_click = Instant::now();
+        self.last_mouse_button = Some(button);
+        self.last_location = location;
+        self.current_count
+    }
+}
+
+/// A tablet tool -- a stylus, an eraser, or a puck -- announced by
+/// `zwp_tablet_seat_v2`.
+///
+/// Tablet input arrives on its own protocol rather than through `wl_pointer`,
+/// and a compositor stops emulating pointer events for a tool once the client
+/// binds the tablet protocol. So each tool is turned back into the ordinary
+/// mouse event stream here, with the tip acting as the left button and the
+/// pressure axis riding along on the events that carry a `pressure` field.
+struct TabletTool {
+    tool: zwp_tablet_tool_v2::ZwpTabletToolV2,
+    /// Whether the tool announced the pressure axis in its initial burst of
+    /// capability events. A tool without one -- a puck, or a mouse-shaped
+    /// tool -- reports full pressure, as an ordinary mouse does.
+    has_pressure: bool,
+    /// Cursor shape handle for this tool, when the compositor supports
+    /// cursor-shape-v1. Each tool carries its own cursor, distinct from the
+    /// pointer's.
+    cursor_shape_device: Option<wp_cursor_shape_device_v1::WpCursorShapeDeviceV1>,
+    /// Serial of the most recent `proximity_in`, which `set_cursor` needs.
+    proximity_serial: u32,
+    /// Window the tool is currently in proximity of.
+    focused_window: Option<WaylandWindowStatePtr>,
+    /// Latest pressure reading, 0.0..=1.0. Kept across frames because the
+    /// axis is only resent when it changes.
+    pressure: f32,
+    /// Surface-local position of the tool. Tracked here rather than read back
+    /// from `mouse_location` so that a tool that has never reported a motion
+    /// cannot make the pointer path's `unwrap`s reachable.
+    position: Point<Pixels>,
+    /// What has arrived since the last `frame` event.
+    pending: TabletFrame,
+}
+
+impl TabletTool {
+    fn new(
+        tool: zwp_tablet_tool_v2::ZwpTabletToolV2,
+        cursor_shape_device: Option<wp_cursor_shape_device_v1::WpCursorShapeDeviceV1>,
+    ) -> Self {
+        Self {
+            tool,
+            has_pressure: false,
+            cursor_shape_device,
+            proximity_serial: 0,
+            focused_window: None,
+            pressure: 0.0,
+            position: Point::default(),
+            pending: TabletFrame::default(),
+        }
+    }
+
+    /// The pressure to put on a mouse event, per the `MouseDownEvent::pressure`
+    /// contract: a device with no pressure axis reports 1.0 so that callers can
+    /// multiply by it unconditionally. A tool that *does* have the axis reports
+    /// what it measured, so a hovering stylus reads a true zero -- the same
+    /// distinction X11 draws.
+    fn reported_pressure(&self) -> f32 {
+        if self.has_pressure {
+            self.pressure
+        } else {
+            1.0
+        }
+    }
+
+    /// Applies `style` to this tool's cursor.
+    ///
+    /// A tool's cursor is independent of the pointer's, and the pointer's
+    /// cursor surface cannot be reused for it -- a `wl_surface` may only ever
+    /// hold one cursor role -- so without cursor-shape-v1 there is nothing to
+    /// set and the compositor's default cursor stays put.
+    fn set_cursor(&self, style: CursorStyle) {
+        if let CursorStyle::None = style {
+            self.tool.set_cursor(self.proximity_serial, None, 0, 0);
+        } else if let Some(cursor_shape_device) = &self.cursor_shape_device {
+            cursor_shape_device.set_shape(self.proximity_serial, style.to_shape());
+        }
+    }
+}
+
+/// Tablet events are batched: everything between two `frame` events describes
+/// one hardware sample and is dispatched together. The batching matters --
+/// the `pressure` belonging to a tip-down arrives *after* the `down` event.
+#[derive(Default)]
+struct TabletFrame {
+    /// Whether the tool moved, i.e. whether a `MouseMoveEvent` is owed.
+    motion: bool,
+    /// `Some(true)` if the tip came down in this frame, `Some(false)` if it
+    /// lifted.
+    tip: Option<bool>,
+    /// Barrel buttons pressed (`true`) or released (`false`), in arrival order.
+    buttons: SmallVec<[(MouseButton, bool); 2]>,
+    /// Whether the tool left proximity, which ends the frame.
+    proximity_out: bool,
 }
 
 pub(crate) struct KeyRepeat {
@@ -415,6 +543,15 @@ impl Drop for WaylandClient {
         if let Some(cursor_shape_device) = &state.cursor_shape_device {
             cursor_shape_device.destroy();
         }
+        for (_, tablet_tool) in state.tablet_tools.drain() {
+            if let Some(cursor_shape_device) = &tablet_tool.cursor_shape_device {
+                cursor_shape_device.destroy();
+            }
+            tablet_tool.tool.destroy();
+        }
+        if let Some(tablet_seat) = &state.tablet_seat {
+            tablet_seat.destroy();
+        }
         if let Some(data_device) = &state.data_device {
             data_device.release();
         }
@@ -529,6 +666,13 @@ impl WaylandClient {
             .as_ref()
             .map(|primary_selection_manager| primary_selection_manager.get_device(&seat, &qh, ()));
 
+        // Tablets hang off the seat but are not a `wl_seat` capability, so
+        // unlike the pointer and keyboard this is set up once, here.
+        let tablet_seat = globals
+            .tablet_manager
+            .as_ref()
+            .map(|tablet_manager| tablet_manager.get_tablet_seat(&seat, &qh, ()));
+
         let mut cursor = Cursor::new(&conn, &globals, 24);
 
         handle
@@ -612,6 +756,8 @@ impl WaylandClient {
             mouse_location: None,
             pinch_gesture: None,
             pinch_last_scale: 1.0,
+            tablet_seat,
+            tablet_tools: HashMap::default(),
             continuous_scroll_delta: None,
             discrete_scroll_delta: None,
             vertical_modifier: -1.0,
@@ -733,24 +879,28 @@ impl LinuxClient for WaylandClient {
             let serial = state.serial_tracker.get(SerialKind::MouseEnter);
             state.cursor_style = Some(style);
 
-            if let CursorStyle::None = style {
-                let wl_pointer = state
-                    .wl_pointer
-                    .clone()
-                    .expect("window is focused by pointer");
-                wl_pointer.set_cursor(serial, None, 0, 0);
-            } else if let Some(cursor_shape_device) = &state.cursor_shape_device {
-                cursor_shape_device.set_shape(serial, style.to_shape());
-            } else if let Some(focused_window) = &state.mouse_focused_window {
-                // cursor-shape-v1 isn't supported, set the cursor using a surface.
-                let wl_pointer = state
-                    .wl_pointer
-                    .clone()
-                    .expect("window is focused by pointer");
-                let scale = focused_window.primary_output_scale();
-                state
-                    .cursor
-                    .set_icon(&wl_pointer, serial, style.to_icon_names(), scale);
+            // A seat with a tablet but no mouse has no `wl_pointer` at all,
+            // so the pointer's cursor is only worth setting when one exists.
+            if let Some(wl_pointer) = state.wl_pointer.clone() {
+                if let CursorStyle::None = style {
+                    wl_pointer.set_cursor(serial, None, 0, 0);
+                } else if let Some(cursor_shape_device) = &state.cursor_shape_device {
+                    cursor_shape_device.set_shape(serial, style.to_shape());
+                } else if let Some(focused_window) = &state.mouse_focused_window {
+                    // cursor-shape-v1 isn't supported, set the cursor using a surface.
+                    let scale = focused_window.primary_output_scale();
+                    state
+                        .cursor
+                        .set_icon(&wl_pointer, serial, style.to_icon_names(), scale);
+                }
+            }
+
+            // Tablet tools carry their own cursor, so a style set while a
+            // stylus is hovering has to be pushed to the tool as well.
+            for tablet_tool in state.tablet_tools.values() {
+                if tablet_tool.focused_window.is_some() {
+                    tablet_tool.set_cursor(style);
+                }
             }
         }
     }
@@ -951,6 +1101,9 @@ delegate_noop!(WaylandClientStatePtr: ignore wl_compositor::WlCompositor);
 delegate_noop!(WaylandClientStatePtr: ignore wp_cursor_shape_device_v1::WpCursorShapeDeviceV1);
 delegate_noop!(WaylandClientStatePtr: ignore wp_cursor_shape_manager_v1::WpCursorShapeManagerV1);
 delegate_noop!(WaylandClientStatePtr: ignore zwp_pointer_gestures_v1::ZwpPointerGesturesV1);
+delegate_noop!(WaylandClientStatePtr: ignore zwp_tablet_manager_v2::ZwpTabletManagerV2);
+delegate_noop!(WaylandClientStatePtr: ignore zwp_tablet_pad_ring_v2::ZwpTabletPadRingV2);
+delegate_noop!(WaylandClientStatePtr: ignore zwp_tablet_pad_strip_v2::ZwpTabletPadStripV2);
 delegate_noop!(WaylandClientStatePtr: ignore wl_data_device_manager::WlDataDeviceManager);
 delegate_noop!(WaylandClientStatePtr: ignore zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1);
 delegate_noop!(WaylandClientStatePtr: ignore wl_shm::WlShm);
@@ -1532,6 +1685,335 @@ fn linux_button_to_gpui(button: u32) -> Option<MouseButton> {
     })
 }
 
+fn tablet_button_to_gpui(button: u32) -> Option<MouseButton> {
+    // Also from <linux/input-event-codes.h>. A stylus' barrel buttons are
+    // conventionally the right and middle mouse buttons -- that is what the
+    // X11 wacom driver and Windows pen input both report them as -- so a
+    // caller written against a mouse keeps working with a stylus.
+    const BTN_STYLUS: u32 = 0x14b;
+    const BTN_STYLUS2: u32 = 0x14c;
+
+    match button {
+        BTN_STYLUS => Some(MouseButton::Right),
+        BTN_STYLUS2 => Some(MouseButton::Middle),
+        // Puck-shaped tools report ordinary mouse buttons.
+        _ => linux_button_to_gpui(button),
+    }
+}
+
+impl Dispatch<zwp_tablet_seat_v2::ZwpTabletSeatV2, ()> for WaylandClientStatePtr {
+    fn event(
+        this: &mut Self,
+        _: &zwp_tablet_seat_v2::ZwpTabletSeatV2,
+        event: zwp_tablet_seat_v2::Event,
+        _: &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        // Only tools carry input. Tablets and pads are announced whether or
+        // not anything here wants them, so they get handlers below, but
+        // nothing is done with them.
+        let zwp_tablet_seat_v2::Event::ToolAdded { id } = event else {
+            return;
+        };
+
+        let client = this.get_client();
+        let mut state = client.borrow_mut();
+        let tool_id = id.id();
+        let cursor_shape_device = state
+            .globals
+            .cursor_shape_manager
+            .as_ref()
+            .map(|cursor_shape_manager| cursor_shape_manager.get_tablet_tool_v2(&id, qh, ()));
+        state
+            .tablet_tools
+            .insert(tool_id, TabletTool::new(id, cursor_shape_device));
+    }
+
+    event_created_child!(WaylandClientStatePtr, zwp_tablet_seat_v2::ZwpTabletSeatV2, [
+        zwp_tablet_seat_v2::EVT_TABLET_ADDED_OPCODE => (zwp_tablet_v2::ZwpTabletV2, ()),
+        zwp_tablet_seat_v2::EVT_TOOL_ADDED_OPCODE => (zwp_tablet_tool_v2::ZwpTabletToolV2, ()),
+        zwp_tablet_seat_v2::EVT_PAD_ADDED_OPCODE => (zwp_tablet_pad_v2::ZwpTabletPadV2, ()),
+    ]);
+}
+
+impl Dispatch<zwp_tablet_tool_v2::ZwpTabletToolV2, ()> for WaylandClientStatePtr {
+    fn event(
+        this: &mut Self,
+        tool: &zwp_tablet_tool_v2::ZwpTabletToolV2,
+        event: zwp_tablet_tool_v2::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let client = this.get_client();
+        let mut state = client.borrow_mut();
+        let tool_id = tool.id();
+
+        match event {
+            zwp_tablet_tool_v2::Event::Capability {
+                capability: WEnum::Value(capability),
+            } => {
+                if capability == zwp_tablet_tool_v2::Capability::Pressure
+                    && let Some(tablet_tool) = state.tablet_tools.get_mut(&tool_id)
+                {
+                    tablet_tool.has_pressure = true;
+                }
+            }
+            zwp_tablet_tool_v2::Event::ProximityIn {
+                serial, surface, ..
+            } => {
+                state.serial_tracker.update(SerialKind::MouseEnter, serial);
+                let Some(window) = get_window(&mut state, &surface.id()) else {
+                    return;
+                };
+
+                let cursor_style = state.cursor_style;
+                let Some(tablet_tool) = state.tablet_tools.get_mut(&tool_id) else {
+                    return;
+                };
+                tablet_tool.proximity_serial = serial;
+                tablet_tool.focused_window = Some(window.clone());
+                // Whatever was mid-frame belonged to the surface being left.
+                tablet_tool.pending = TabletFrame::default();
+                if let Some(cursor_style) = cursor_style {
+                    tablet_tool.set_cursor(cursor_style);
+                }
+
+                // A stylus and a mouse share one notion of what the pointer is
+                // over, so proximity takes the focus the same way an enter does.
+                state.mouse_focused_window = Some(window.clone());
+                state.button_pressed = None;
+
+                drop(state);
+                window.set_hovered(true);
+            }
+            zwp_tablet_tool_v2::Event::ProximityOut => {
+                // Button releases are sent before this but within the same
+                // frame, so the exit is dispatched from the frame handler.
+                if let Some(tablet_tool) = state.tablet_tools.get_mut(&tool_id) {
+                    tablet_tool.pending.proximity_out = true;
+                }
+            }
+            zwp_tablet_tool_v2::Event::Motion { x, y } => {
+                if let Some(tablet_tool) = state.tablet_tools.get_mut(&tool_id) {
+                    tablet_tool.position = point(px(x as f32), px(y as f32));
+                    tablet_tool.pending.motion = true;
+                }
+            }
+            zwp_tablet_tool_v2::Event::Pressure { pressure } => {
+                if let Some(tablet_tool) = state.tablet_tools.get_mut(&tool_id) {
+                    // The protocol normalizes the axis to 0..=65535.
+                    tablet_tool.pressure = (pressure as f32 / 65535.0).clamp(0.0, 1.0);
+                }
+            }
+            zwp_tablet_tool_v2::Event::Down { serial } => {
+                state.serial_tracker.update(SerialKind::MousePress, serial);
+                if let Some(tablet_tool) = state.tablet_tools.get_mut(&tool_id) {
+                    tablet_tool.pending.tip = Some(true);
+                }
+            }
+            zwp_tablet_tool_v2::Event::Up => {
+                if let Some(tablet_tool) = state.tablet_tools.get_mut(&tool_id) {
+                    tablet_tool.pending.tip = Some(false);
+                }
+            }
+            zwp_tablet_tool_v2::Event::Button {
+                serial,
+                button,
+                state: WEnum::Value(button_state),
+            } => {
+                state.serial_tracker.update(SerialKind::MousePress, serial);
+                let Some(button) = tablet_button_to_gpui(button) else {
+                    return;
+                };
+                let pressed = button_state == zwp_tablet_tool_v2::ButtonState::Pressed;
+                if let Some(tablet_tool) = state.tablet_tools.get_mut(&tool_id) {
+                    tablet_tool.pending.buttons.push((button, pressed));
+                }
+            }
+            zwp_tablet_tool_v2::Event::Frame { .. } => {
+                let Some(tablet_tool) = state.tablet_tools.get_mut(&tool_id) else {
+                    return;
+                };
+                let pending = std::mem::take(&mut tablet_tool.pending);
+                let position = tablet_tool.position;
+                // Read once for the whole frame: every event in it describes
+                // the same hardware sample, including the pressure that arrived
+                // after the `down` it belongs to.
+                let pressure = tablet_tool.reported_pressure();
+                let Some(window) = tablet_tool.focused_window.clone() else {
+                    return;
+                };
+                let left_proximity = pending.proximity_out;
+
+                let mut inputs: SmallVec<[PlatformInput; 4]> = SmallVec::new();
+
+                if pending.motion {
+                    state.mouse_location = Some(position);
+                    inputs.push(PlatformInput::MouseMove(MouseMoveEvent {
+                        position,
+                        pressed_button: state.button_pressed,
+                        modifiers: state.modifiers,
+                        pressure,
+                    }));
+                }
+
+                // The tip acts as the left button. It is reported after the
+                // move, so that the press lands at the position the tool
+                // travelled to within this same frame.
+                if pending.tip == Some(true) {
+                    let click_count = state.click.press(MouseButton::Left, position);
+                    state.button_pressed = Some(MouseButton::Left);
+                    inputs.push(PlatformInput::MouseDown(MouseDownEvent {
+                        button: MouseButton::Left,
+                        position,
+                        modifiers: state.modifiers,
+                        click_count,
+                        first_mouse: state.enter_token.take().is_some(),
+                        pressure,
+                    }));
+                }
+
+                for (button, pressed) in pending.buttons {
+                    if pressed {
+                        let click_count = state.click.press(button, position);
+                        state.button_pressed = Some(button);
+                        inputs.push(PlatformInput::MouseDown(MouseDownEvent {
+                            button,
+                            position,
+                            modifiers: state.modifiers,
+                            click_count,
+                            first_mouse: state.enter_token.take().is_some(),
+                            pressure,
+                        }));
+                    } else {
+                        state.button_pressed = None;
+                        inputs.push(PlatformInput::MouseUp(MouseUpEvent {
+                            button,
+                            position,
+                            modifiers: state.modifiers,
+                            click_count: state.click.current_count,
+                            pressure,
+                        }));
+                    }
+                }
+
+                if pending.tip == Some(false) {
+                    state.button_pressed = None;
+                    inputs.push(PlatformInput::MouseUp(MouseUpEvent {
+                        button: MouseButton::Left,
+                        position,
+                        modifiers: state.modifiers,
+                        click_count: state.click.current_count,
+                        pressure,
+                    }));
+                }
+
+                if left_proximity {
+                    inputs.push(PlatformInput::MouseExited(MouseExitEvent {
+                        position,
+                        pressed_button: state.button_pressed,
+                        modifiers: state.modifiers,
+                    }));
+
+                    if let Some(tablet_tool) = state.tablet_tools.get_mut(&tool_id) {
+                        tablet_tool.focused_window = None;
+                        tablet_tool.pressure = 0.0;
+                    }
+                    state.button_pressed = None;
+                    // Only hand back the shared focus if a mouse has not taken
+                    // it in the meantime.
+                    if state
+                        .mouse_focused_window
+                        .as_ref()
+                        .is_some_and(|focused_window| focused_window.ptr_eq(&window))
+                    {
+                        state.mouse_focused_window = None;
+                        state.mouse_location = None;
+                    }
+                }
+
+                drop(state);
+                for input in inputs {
+                    window.handle_input(input);
+                }
+                if left_proximity {
+                    window.set_hovered(false);
+                }
+            }
+            zwp_tablet_tool_v2::Event::Removed => {
+                // A tool in proximity is taken out of it first, so the focus
+                // has already been handed back by the time this arrives.
+                if let Some(tablet_tool) = state.tablet_tools.remove(&tool_id)
+                    && let Some(cursor_shape_device) = &tablet_tool.cursor_shape_device
+                {
+                    cursor_shape_device.destroy();
+                }
+                tool.destroy();
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<zwp_tablet_v2::ZwpTabletV2, ()> for WaylandClientStatePtr {
+    fn event(
+        _: &mut Self,
+        tablet: &zwp_tablet_v2::ZwpTabletV2,
+        event: zwp_tablet_v2::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        // The device's name, vid/pid and path are of no use here; all the
+        // protocol asks is that the object be destroyed once it is removed.
+        if let zwp_tablet_v2::Event::Removed = event {
+            tablet.destroy();
+        }
+    }
+}
+
+impl Dispatch<zwp_tablet_pad_v2::ZwpTabletPadV2, ()> for WaylandClientStatePtr {
+    fn event(
+        _: &mut Self,
+        pad: &zwp_tablet_pad_v2::ZwpTabletPadV2,
+        event: zwp_tablet_pad_v2::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        // A pad's buttons, rings and strips have no GPUI event to map onto, so
+        // they are ignored -- but the seat announces pads regardless of that,
+        // and the group/ring/strip objects it hangs off them still need
+        // handlers to keep the queue from panicking on an unclaimed new_id.
+        if let zwp_tablet_pad_v2::Event::Removed = event {
+            pad.destroy();
+        }
+    }
+
+    event_created_child!(WaylandClientStatePtr, zwp_tablet_pad_v2::ZwpTabletPadV2, [
+        zwp_tablet_pad_v2::EVT_GROUP_OPCODE => (zwp_tablet_pad_group_v2::ZwpTabletPadGroupV2, ()),
+    ]);
+}
+
+impl Dispatch<zwp_tablet_pad_group_v2::ZwpTabletPadGroupV2, ()> for WaylandClientStatePtr {
+    fn event(
+        _: &mut Self,
+        _: &zwp_tablet_pad_group_v2::ZwpTabletPadGroupV2,
+        _: zwp_tablet_pad_group_v2::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+
+    event_created_child!(WaylandClientStatePtr, zwp_tablet_pad_group_v2::ZwpTabletPadGroupV2, [
+        zwp_tablet_pad_group_v2::EVT_RING_OPCODE => (zwp_tablet_pad_ring_v2::ZwpTabletPadRingV2, ()),
+        zwp_tablet_pad_group_v2::EVT_STRIP_OPCODE => (zwp_tablet_pad_strip_v2::ZwpTabletPadStripV2, ()),
+    ]);
+}
+
 impl Dispatch<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1, ()>
     for WaylandClientStatePtr
 {
@@ -1717,35 +2199,17 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandClientStatePtr {
                                 state = client.borrow_mut();
                             }
                         }
-                        let click_elapsed = state.click.last_click.elapsed();
-
-                        if click_elapsed < DOUBLE_CLICK_INTERVAL
-                            && state
-                                .click
-                                .last_mouse_button
-                                .is_some_and(|prev_button| prev_button == button)
-                            && is_within_click_distance(
-                                state.click.last_location,
-                                state.mouse_location.unwrap(),
-                            )
-                        {
-                            state.click.current_count += 1;
-                        } else {
-                            state.click.current_count = 1;
-                        }
-
-                        state.click.last_click = Instant::now();
-                        state.click.last_mouse_button = Some(button);
-                        state.click.last_location = state.mouse_location.unwrap();
+                        let position = state.mouse_location.unwrap();
+                        let click_count = state.click.press(button, position);
 
                         state.button_pressed = Some(button);
 
                         if let Some(window) = state.mouse_focused_window.clone() {
                             let input = PlatformInput::MouseDown(MouseDownEvent {
                                 button,
-                                position: state.mouse_location.unwrap(),
+                                position,
                                 modifiers: state.modifiers,
-                                click_count: state.click.current_count,
+                                click_count,
                                 first_mouse: state.enter_token.take().is_some(),
                                 // A mouse reports full pressure; tablets override this.
                                 pressure: 1.0,
@@ -2243,5 +2707,56 @@ impl Dispatch<zwp_primary_selection_source_v1::ZwpPrimarySelectionSourceV1, ()>
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn click_state() -> ClickState {
+        ClickState {
+            last_mouse_button: None,
+            last_click: Instant::now() - DOUBLE_CLICK_INTERVAL,
+            last_location: Point::default(),
+            current_count: 0,
+        }
+    }
+
+    /// The pointer and the tablet share this run counting, so a stylus tapping
+    /// twice has to double-click exactly as a mouse does.
+    #[test]
+    fn test_click_state_counts_runs() {
+        let mut click = click_state();
+        let origin = point(px(10.), px(10.));
+
+        assert_eq!(click.press(MouseButton::Left, origin), 1);
+        assert_eq!(click.press(MouseButton::Left, origin), 2);
+        assert_eq!(click.press(MouseButton::Left, origin), 3);
+
+        // A different button starts a new run,
+        assert_eq!(click.press(MouseButton::Right, origin), 1);
+        // as does a press far enough away to not be the same click.
+        assert_eq!(
+            click.press(MouseButton::Right, point(px(500.), px(500.))),
+            1
+        );
+
+        // ...and so does a press that came too late.
+        click.last_click = Instant::now() - DOUBLE_CLICK_INTERVAL;
+        assert_eq!(
+            click.press(MouseButton::Right, point(px(500.), px(500.))),
+            1
+        );
+    }
+
+    #[test]
+    fn test_tablet_barrel_buttons_map_to_mouse_buttons() {
+        assert_eq!(tablet_button_to_gpui(0x14b), Some(MouseButton::Right));
+        assert_eq!(tablet_button_to_gpui(0x14c), Some(MouseButton::Middle));
+        // A puck reports ordinary mouse buttons, which still have to map.
+        assert_eq!(tablet_button_to_gpui(0x110), Some(MouseButton::Left));
+        // Anything else -- the third barrel button, say -- has no mapping.
+        assert_eq!(tablet_button_to_gpui(0x149), None);
     }
 }

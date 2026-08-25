@@ -126,7 +126,7 @@ otherwise paint nothing at all on a mouse.
 | Platform | Status | Mechanism |
 | --- | --- | --- |
 | macOS | Supported | `NSEvent.pressure` |
-| Linux/Wayland | Not implemented | Would need `zwp_tablet_v2` |
+| Linux/Wayland | Supported | `zwp_tablet_v2`, when the compositor advertises it |
 | Linux/X11 | Supported | XInput2 "Abs Pressure" valuator |
 | Windows | Supported | `WM_POINTER` pen pressure, carried onto the synthesised mouse messages |
 
@@ -135,8 +135,20 @@ pressure for both: AppKit reports 0 for an ordinary mouse click, which is
 indistinguishable from a stylus barely touching the tablet, so anything at
 or below zero is reported as full pressure, and Windows does the same for a
 zero reading, which is what a hovering pen reports. X11 identifies tablets
-by their pressure valuator, so there a hovering stylus reports its true
-(zero) pressure and only devices without the valuator report 1.0.
+by their pressure valuator and Wayland by the tool's advertised pressure
+capability, so on both a hovering stylus reports its true (zero) pressure
+and only devices without the axis report 1.0.
+
+Wayland delivers tablet input on its own protocol rather than through
+`wl_pointer`, and a compositor stops emulating pointer events for a tool as
+soon as a client binds that protocol, so this fork synthesises the mouse
+event stream from it: the tip is the left button, the two barrel buttons are
+the right and middle buttons (matching what the X11 wacom driver and Windows
+pen input report), and a tool that leaves proximity produces a mouse exit.
+Tablet pads -- the ring of express keys on the tablet body -- are not mapped
+to anything. A tool gets its own cursor, so `set_cursor_style` reaches it
+only when the compositor supports `cursor-shape-v1`; otherwise the
+compositor's default cursor stays under the stylus.
 
 On Windows the pen system gestures (press-and-hold for right-click, tap
 feedback, flicks) are disabled on GPUI windows, since they delay or swallow
