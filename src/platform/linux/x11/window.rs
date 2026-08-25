@@ -623,8 +623,8 @@ impl X11WindowState {
                 // parses the events but has no named constants for these bits,
                 // and selecting them on a pre-2.4 server would be a BadValue
                 // error, hence the version gate.
-                pointer_event_mask =
-                    pointer_event_mask | xinput::XIEventMask::from((1u32 << 27) | (1 << 28) | (1 << 29));
+                pointer_event_mask = pointer_event_mask
+                    | xinput::XIEventMask::from((1u32 << 27) | (1 << 28) | (1 << 29));
             }
             check_reply(
                 || "X11 XiSelectEvents failed.",
