@@ -137,6 +137,41 @@ impl<T: ReceiveData> DataOffer<T> {
     }
 }
 
+/// The mime types to offer for `item`: one per image entry, plus the text
+/// spellings when it has text.
+///
+/// An image-only item -- a copied region of a picture -- used to be offered
+/// as text alone and then sent as nothing at all, so every other
+/// application pasted an empty selection.
+pub(crate) fn offered_mime_types(item: &ClipboardItem) -> Vec<String> {
+    let mut mime_types: Vec<String> = item
+        .entries()
+        .iter()
+        .filter_map(|entry| match entry {
+            ClipboardEntry::Image(image) => Some(image.format.mime_type().to_string()),
+            ClipboardEntry::String(_) => None,
+        })
+        .collect();
+    if item.text().is_some() {
+        mime_types.extend(TEXT_MIME_TYPES.iter().map(|mime| mime.to_string()));
+    }
+    mime_types
+}
+
+/// What to write down the pipe for the mime type a paste asked for.
+fn bytes_for_mime(item: Option<&ClipboardItem>, mime_type: &str) -> Option<Vec<u8>> {
+    let item = item?;
+    for entry in item.entries() {
+        if let ClipboardEntry::Image(image) = entry {
+            if image.format.mime_type() == mime_type {
+                return Some(image.bytes.clone());
+            }
+        }
+    }
+    // Anything else is a text request, including our own `self_mime` probe.
+    item.text().map(String::into_bytes)
+}
+
 impl Clipboard {
     pub fn new(
         connection: Connection,
@@ -179,19 +214,15 @@ impl Clipboard {
         self.self_mime.clone()
     }
 
-    pub fn send(&self, _mime_type: String, fd: OwnedFd) {
-        if let Some(text) = self.contents.as_ref().and_then(|contents| contents.text()) {
-            self.send_internal(fd, text.as_bytes().to_owned());
+    pub fn send(&self, mime_type: String, fd: OwnedFd) {
+        if let Some(bytes) = bytes_for_mime(self.contents.as_ref(), &mime_type) {
+            self.send_internal(fd, bytes);
         }
     }
 
-    pub fn send_primary(&self, _mime_type: String, fd: OwnedFd) {
-        if let Some(text) = self
-            .primary_contents
-            .as_ref()
-            .and_then(|contents| contents.text())
-        {
-            self.send_internal(fd, text.as_bytes().to_owned());
+    pub fn send_primary(&self, mime_type: String, fd: OwnedFd) {
+        if let Some(bytes) = bytes_for_mime(self.primary_contents.as_ref(), &mime_type) {
+            self.send_internal(fd, bytes);
         }
     }
 

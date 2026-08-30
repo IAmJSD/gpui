@@ -102,6 +102,35 @@ time.
   pads unconditionally and a `new_id` with no registered child handler
   panics the queue.
 
+- **Images on the Linux clipboards.** Both Linux backends wrote
+  `item.text().unwrap_or_default()` and nothing else, so copying a
+  `ClipboardItem::new_image` -- a region of a picture -- put an empty string
+  on the system clipboard and every other application pasted nothing.
+  (Pasting *into* gpui already read images, and copying inside one process
+  worked off the cached item, which is what hid it.)
+
+  X11 now offers every entry of the item at once: each image under its own
+  MIME atom, the text as `UTF8_STRING`. `Clipboard::set_image` had the same
+  bug in miniature -- it computed the format atom and then hardcoded
+  `image/png` -- and is gone along with `set_text`, both replaced by
+  `set_item`. Two smaller fixes fell out of serving a selection honestly:
+  `TARGETS` advertises the two MIME spellings of `UTF8_STRING` but the
+  content path only matched the exact atom, so a requestor that picked one
+  of them was refused; and a property write that fails (there is no INCR on
+  the write side, so a selection larger than one request cannot be sent)
+  now answers with `None` instead of leaving the requestor to time out. A
+  megabyte goes through in one request under BIG-REQUESTS, which covers
+  what a copied image weighs.
+
+  Wayland offers the image MIME types on the data source, and `send` /
+  `send_primary` honour the mime type they are handed rather than always
+  writing the text.
+
+  The X11 path has unit tests (`platform::linux::x11::clipboard`) that go
+  over the wire from a second connection -- a real second X client -- so
+  they need a display; they no-op when `DISPLAY` is unset. Wayland is
+  compile-reviewed as ever.
+
 Of these backends only X11 could be exercised on real input during
 development, and only for the mouse (pressure-less) path; Xvfb cannot
 synthesise gestures or tablets. macOS, Wayland and Windows are

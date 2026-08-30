@@ -19,7 +19,6 @@
 // https://freedesktop.org/wiki/ClipboardManager/
 
 use std::{
-    borrow::Cow,
     cell::RefCell,
     collections::{HashMap, hash_map::Entry},
     sync::{
@@ -47,7 +46,7 @@ use x11rb::{
     wrapper::ConnectionExt as _,
 };
 
-use crate::{ClipboardItem, Image, ImageFormat, hash};
+use crate::{ClipboardEntry, ClipboardItem, Image, ImageFormat, hash};
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
@@ -713,9 +712,23 @@ impl Inner {
             log::trace!("Handling request for (probably) the clipboard contents.");
             let data = self.selection_of(selection).data.read();
             if let Some(data_list) = &*data {
-                success = match data_list.iter().find(|d| d.format == event.target) {
+                // TARGETS offers the two UTF-8 MIME spellings alongside
+                // UTF8_STRING, so a requestor that picks one of them has to
+                // be served from the same entry rather than refused.
+                let serves = |data: &&ClipboardData| {
+                    data.format == event.target
+                        || (data.format == self.atoms.UTF8_STRING
+                            && (event.target == self.atoms.UTF8_MIME_0
+                                || event.target == self.atoms.UTF8_MIME_1))
+                };
+                success = match data_list.iter().find(serves) {
                     Some(data) => {
-                        self.server
+                        // A property write too large for one request (no
+                        // INCR here) has to be refused rather than left
+                        // unanswered, or the paste hangs until its own
+                        // timeout instead of failing.
+                        match self
+                            .server
                             .conn
                             .change_property8(
                                 PropMode::REPLACE,
@@ -724,9 +737,18 @@ impl Inner {
                                 event.target,
                                 &data.bytes,
                             )
-                            .map_err(into_unknown)?;
-                        self.server.conn.flush().map_err(into_unknown)?;
-                        true
+                            .and_then(|_| self.server.conn.flush())
+                        {
+                            Ok(()) => true,
+                            Err(err) => {
+                                log::error!(
+                                    "Failed to serve {} bytes of {}: {err}",
+                                    data.bytes.len(),
+                                    self.atom_name(event.target)
+                                );
+                                false
+                            }
+                        }
                     }
                     None => false,
                 };
@@ -975,27 +997,40 @@ impl Clipboard {
         Ok(Self { inner: ctx })
     }
 
-    pub(crate) fn set_text(
+    /// Offer every entry of `item` at once: each image in its own format,
+    /// and the text (if any) as UTF-8.
+    ///
+    /// Serving only `item.text()` meant an image-only item -- a copied
+    /// region of a picture -- reached the selection as an empty string,
+    /// and every other application pasted nothing.
+    pub(crate) fn set_item(
         &self,
-        message: Cow<'_, str>,
+        item: &ClipboardItem,
         selection: ClipboardKind,
         wait: WaitConfig,
     ) -> Result<()> {
-        let data = vec![ClipboardData {
-            bytes: message.into_owned().into_bytes(),
-            format: self.inner.atoms.UTF8_STRING,
-        }];
+        let mut data: Vec<ClipboardData> = item
+            .entries()
+            .iter()
+            .filter_map(|entry| match entry {
+                ClipboardEntry::Image(image) => Some(ClipboardData {
+                    bytes: image.bytes.clone(),
+                    format: self.image_atom(image.format),
+                }),
+                ClipboardEntry::String(_) => None,
+            })
+            .collect();
+        if let Some(text) = item.text() {
+            data.push(ClipboardData {
+                bytes: text.into_bytes(),
+                format: self.inner.atoms.UTF8_STRING,
+            });
+        }
         self.inner.write(data, selection, wait)
     }
 
-    #[allow(unused)]
-    pub(crate) fn set_image(
-        &self,
-        image: Image,
-        selection: ClipboardKind,
-        wait: WaitConfig,
-    ) -> Result<()> {
-        let format = match image.format {
+    fn image_atom(&self, format: ImageFormat) -> Atom {
+        match format {
             ImageFormat::Png => self.inner.atoms.PNG__MIME,
             ImageFormat::Jpeg => self.inner.atoms.JPEG_MIME,
             ImageFormat::Webp => self.inner.atoms.WEBP_MIME,
@@ -1003,12 +1038,7 @@ impl Clipboard {
             ImageFormat::Svg => self.inner.atoms.SVG__MIME,
             ImageFormat::Bmp => self.inner.atoms.BMP__MIME,
             ImageFormat::Tiff => self.inner.atoms.TIFF_MIME,
-        };
-        let data = vec![ClipboardData {
-            bytes: image.bytes,
-            format: self.inner.atoms.PNG__MIME,
-        }];
-        self.inner.write(data, selection, wait)
+        }
     }
 
     pub(crate) fn get_any(&self, selection: ClipboardKind) -> Result<ClipboardItem> {
@@ -1265,6 +1295,177 @@ impl Error {
     pub(crate) fn unknown<M: Into<String>>(message: M) -> Self {
         Error::Unknown {
             description: message.into(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use x11rb::protocol::xproto::GetPropertyReply;
+
+    /// The clipboard, and the X selection behind it, are one per process:
+    /// two tests setting it at once would each read the other's data.
+    static SELECTION: Mutex<()> = parking_lot::const_mutex(());
+
+    /// Ask for a target the way another application does -- over the wire,
+    /// on a connection of its own -- and hand back the property the
+    /// selection owner wrote.
+    struct Requestor {
+        conn: RustConnection,
+        window: u32,
+        atoms: Atoms,
+    }
+
+    impl Requestor {
+        fn new() -> Result<Self> {
+            let (conn, screen_num) = x11rb::connect(None).map_err(into_unknown)?;
+            let screen = &conn.setup().roots[screen_num];
+            let window = conn.generate_id().map_err(into_unknown)?;
+            conn.create_window(
+                COPY_DEPTH_FROM_PARENT,
+                window,
+                screen.root,
+                0,
+                0,
+                1,
+                1,
+                0,
+                WindowClass::INPUT_OUTPUT,
+                COPY_FROM_PARENT,
+                &CreateWindowAux::new().event_mask(EventMask::PROPERTY_CHANGE),
+            )
+            .map_err(into_unknown)?;
+            let atoms = Atoms::new(&conn)
+                .map_err(into_unknown)?
+                .reply()
+                .map_err(into_unknown)?;
+            Ok(Self {
+                conn,
+                window,
+                atoms,
+            })
+        }
+
+        fn request(&self, target: Atom) -> Option<GetPropertyReply> {
+            self.conn
+                .convert_selection(
+                    self.window,
+                    self.atoms.CLIPBOARD,
+                    target,
+                    self.atoms.ARBOARD_CLIPBOARD,
+                    Time::CURRENT_TIME,
+                )
+                .ok()?;
+            self.conn.flush().ok()?;
+
+            let deadline = Instant::now() + LONG_TIMEOUT_DUR;
+            while Instant::now() < deadline {
+                match self.conn.poll_for_event().ok()? {
+                    Some(Event::SelectionNotify(event)) if event.requestor == self.window => {
+                        if event.property == NONE {
+                            return None;
+                        }
+                        return self
+                            .conn
+                            .get_property(
+                                true,
+                                self.window,
+                                event.property,
+                                AtomEnum::ANY,
+                                0,
+                                u32::MAX,
+                            )
+                            .ok()?
+                            .reply()
+                            .ok();
+                    }
+                    Some(_) => {}
+                    None => std::thread::sleep(Duration::from_millis(5)),
+                }
+            }
+            None
+        }
+    }
+
+    fn image(format: ImageFormat, bytes: &[u8]) -> Image {
+        Image {
+            id: hash(&bytes),
+            format,
+            bytes: bytes.to_vec(),
+        }
+    }
+
+    /// Copying a picture used to reach the selection as `item.text()`, i.e.
+    /// an empty string, so pasting into any other application produced
+    /// nothing. Every entry has to be offered in its own format.
+    #[test]
+    fn an_image_is_offered_to_other_clients() {
+        if std::env::var_os("DISPLAY").is_none() {
+            // No X server to talk to; this test cannot say anything.
+            return;
+        }
+        let _owner = SELECTION.lock();
+        // Bigger than the 256 KB a request can carry without BIG-REQUESTS:
+        // a copied region of a picture is megabytes, not bytes.
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend((0..1024 * 1024).map(|i| i as u8));
+        let png = &png[..];
+        let clipboard = Clipboard::new().unwrap();
+        clipboard
+            .set_item(
+                &ClipboardItem::new_image(&image(ImageFormat::Png, png)),
+                ClipboardKind::Clipboard,
+                WaitConfig::None,
+            )
+            .unwrap();
+
+        let requestor = Requestor::new().unwrap();
+        let targets = requestor
+            .request(requestor.atoms.TARGETS)
+            .expect("no reply to TARGETS");
+        let targets: Vec<Atom> = targets
+            .value32()
+            .expect("TARGETS is a list of atoms")
+            .collect();
+        assert!(
+            targets.contains(&requestor.atoms.PNG__MIME),
+            "image/png was not offered"
+        );
+
+        let served = requestor
+            .request(requestor.atoms.PNG__MIME)
+            .expect("no reply to image/png");
+        assert_eq!(served.value, png, "the png came back changed");
+    }
+
+    /// TARGETS offers the MIME spellings of UTF8_STRING, so asking for one
+    /// of them has to be answered rather than refused.
+    #[test]
+    fn text_is_served_under_every_name_it_is_offered_under() {
+        if std::env::var_os("DISPLAY").is_none() {
+            return;
+        }
+        let _owner = SELECTION.lock();
+        let clipboard = Clipboard::new().unwrap();
+        clipboard
+            .set_item(
+                &ClipboardItem::new_string("hello".into()),
+                ClipboardKind::Clipboard,
+                WaitConfig::None,
+            )
+            .unwrap();
+
+        let requestor = Requestor::new().unwrap();
+        for target in [
+            requestor.atoms.UTF8_STRING,
+            requestor.atoms.UTF8_MIME_0,
+            requestor.atoms.UTF8_MIME_1,
+        ] {
+            let served = requestor
+                .request(target)
+                .expect("no reply for an offered text target");
+            assert_eq!(served.value, b"hello");
         }
     }
 }
