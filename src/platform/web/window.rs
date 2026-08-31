@@ -94,6 +94,9 @@ pub(crate) struct WebWindowInner {
     /// Identifies this window's canvas in its `data-raw-handle` attribute
     /// and raw window handle.
     handle_id: u32,
+    /// Normal windows fill the viewport; popup and floating windows are
+    /// positioned canvases whose bounds gpui controls.
+    fills_viewport: bool,
     /// An invisible focused `<input>`: composition (IME, dead keys) only
     /// happens on editable elements, and key events bubble from it to the
     /// window-level listeners. `update_ime_position` moves it so the IME
@@ -131,19 +134,27 @@ impl WebWindow {
         gpu: &Arc<WebGpuContext>,
         clipboard: Rc<RefCell<Option<ClipboardItem>>>,
         _handle: AnyWindowHandle,
-        _params: WindowParams,
+        params: WindowParams,
     ) -> Result<Self> {
         let document = web_sys::window()
             .context("no global `window`")?
             .document()
             .context("no `document`")?;
 
+        // A normal window is a full-viewport canvas; popup and floating
+        // windows are canvases positioned at their requested bounds, above
+        // the normal ones.
+        let fills_viewport = matches!(params.kind, crate::WindowKind::Normal);
+        let handle_id = next_handle_id();
+
         // A `data-raw-handle` attribute means the canvas is already claimed
-        // by an earlier window; each window needs its own canvas.
+        // by an earlier window; each window needs its own canvas. Only a
+        // normal window may claim the page's own `#gpui` canvas -- a page
+        // lays out main surfaces, not popups.
         let canvas = match document
             .get_element_by_id(CANVAS_ELEMENT_ID)
             .and_then(|element| element.dyn_into::<HtmlCanvasElement>().ok())
-            .filter(|canvas| !canvas.has_attribute("data-raw-handle"))
+            .filter(|canvas| fills_viewport && !canvas.has_attribute("data-raw-handle"))
         {
             Some(canvas) => canvas,
             None => {
@@ -154,9 +165,30 @@ impl WebWindow {
                     .context("failed to create a canvas element")?;
                 let style = canvas.style();
                 style.set_property("position", "fixed").ok();
-                style.set_property("inset", "0").ok();
-                style.set_property("width", "100vw").ok();
-                style.set_property("height", "100vh").ok();
+                if fills_viewport {
+                    style.set_property("inset", "0").ok();
+                    style.set_property("width", "100vw").ok();
+                    style.set_property("height", "100vh").ok();
+                } else {
+                    let bounds = params.bounds;
+                    style
+                        .set_property("left", &format!("{}px", bounds.origin.x.0))
+                        .ok();
+                    style
+                        .set_property("top", &format!("{}px", bounds.origin.y.0))
+                        .ok();
+                    style
+                        .set_property("width", &format!("{}px", bounds.size.width.0.max(1.0)))
+                        .ok();
+                    style
+                        .set_property("height", &format!("{}px", bounds.size.height.0.max(1.0)))
+                        .ok();
+                    // Above every full-viewport canvas (which stack in DOM
+                    // order, unstyled), and later popups above earlier ones.
+                    style
+                        .set_property("z-index", &(1000 + handle_id).to_string())
+                        .ok();
+                }
                 document
                     .body()
                     .context("document has no body")?
@@ -168,7 +200,6 @@ impl WebWindow {
         };
 
         // raw-window-handle's convention for addressing canvases.
-        let handle_id = next_handle_id();
         canvas
             .set_attribute("data-raw-handle", &handle_id.to_string())
             .ok();
@@ -209,6 +240,7 @@ impl WebWindow {
         let window = Self(Rc::new(WebWindowInner {
             canvas,
             handle_id,
+            fills_viewport,
             ime_input,
             clipboard,
             state: RefCell::new(WebWindowState {
@@ -1119,11 +1151,28 @@ impl raw_window_handle::HasDisplayHandle for WebWindow {
     }
 }
 
+impl Drop for WebWindowInner {
+    fn drop(&mut self) {
+        // The elements would otherwise outlive the window in the DOM -- the
+        // canvas as a stale image, the input as a focusable ghost.
+        self.canvas.remove();
+        self.ime_input.remove();
+    }
+}
+
 impl PlatformWindow for WebWindow {
     fn bounds(&self) -> Bounds<Pixels> {
-        Bounds {
-            origin: Point::default(),
-            size: css_size(&self.0.canvas),
+        if self.0.fills_viewport {
+            Bounds {
+                origin: Point::default(),
+                size: css_size(&self.0.canvas),
+            }
+        } else {
+            let rect = self.0.canvas.get_bounding_client_rect();
+            Bounds {
+                origin: point(px(rect.left() as f32), px(rect.top() as f32)),
+                size: css_size(&self.0.canvas),
+            }
         }
     }
 
@@ -1139,9 +1188,19 @@ impl PlatformWindow for WebWindow {
         css_size(&self.0.canvas)
     }
 
-    fn resize(&mut self, _size: Size<Pixels>) {
-        // The canvas is laid out by the page; programmatic window resizing
-        // does not apply on the web.
+    fn resize(&mut self, size: Size<Pixels>) {
+        // A normal window's canvas is laid out by the page; only positioned
+        // (popup/floating) canvases are gpui's to size. The frame loop picks
+        // up the backing-store change and fires the resize callback.
+        if !self.0.fills_viewport {
+            let style = self.0.canvas.style();
+            style
+                .set_property("width", &format!("{}px", size.width.0.max(1.0)))
+                .ok();
+            style
+                .set_property("height", &format!("{}px", size.height.0.max(1.0)))
+                .ok();
+        }
     }
 
     fn scale_factor(&self) -> f32 {

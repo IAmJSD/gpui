@@ -9,8 +9,9 @@
 //! `docs/web.md` for how to build and serve it.
 
 use gpui::{
-    App, Application, Context, FocusHandle, Focusable, KeyDownEvent, MouseButton, Rgba,
-    SharedString, Window, WindowOptions, div, prelude::*, px, rgb,
+    App, Application, Bounds, Context, FocusHandle, Focusable, KeyDownEvent, MouseButton, Rgba,
+    SharedString, Window, WindowBounds, WindowKind, WindowOptions, div, point, prelude::*, px, rgb,
+    size,
 };
 
 struct WindowContents {
@@ -112,5 +113,28 @@ fn main() {
                 })
                 .unwrap();
         }
+
+        // A positioned popup window: on the web this becomes a canvas at the
+        // requested bounds, above the full-viewport windows.
+        cx.open_window(
+            WindowOptions {
+                kind: WindowKind::PopUp,
+                window_bounds: Some(WindowBounds::Windowed(Bounds {
+                    origin: point(px(40.0), px(40.0)),
+                    size: size(px(320.0), px(120.0)),
+                })),
+                ..Default::default()
+            },
+            |_, cx| {
+                cx.new(|cx| WindowContents {
+                    label: "popup (canvas #3, 320\u{d7}120 at 40,40)".into(),
+                    background: rgb(0x4c566a),
+                    clicks: 0,
+                    keys: 0,
+                    focus_handle: cx.focus_handle(),
+                })
+            },
+        )
+        .unwrap();
     });
 }

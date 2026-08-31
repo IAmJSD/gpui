@@ -1,0 +1,53 @@
+# The same gate applied by hand throughout the web-backend work: native
+# check + tests, the wasm32 target, the web examples, and the Windows
+# cross-check from UPSTREAM.md ("Checking the other platforms").
+name: CI
+
+on:
+  push:
+    branches: [main, worktree-wasm-stage1]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libfontconfig-dev libfreetype-dev \
+            gcc-mingw-w64-x86-64
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown, x86_64-pc-windows-gnu
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Native check
+        run: cargo check
+
+      - name: Native tests
+        run: |
+          cargo test --features test-support --lib
+          cargo test --features test-support --test pinch
+
+      - name: wasm32 check
+        run: cargo check --target wasm32-unknown-unknown
+
+      - name: wasm32 web examples
+        run: >
+          cargo check --target wasm32-unknown-unknown
+          --example hello_web --example input_web --example multi_window_web
+
+      # cargo check never links, so mingw only has to compile the handful of
+      # C build scripts; see UPSTREAM.md for the reasoning.
+      - name: Windows cross-check
+        run: cargo check --target x86_64-pc-windows-gnu

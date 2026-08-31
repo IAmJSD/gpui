@@ -197,6 +197,9 @@ impl BackgroundExecutor {
     }
 
     #[cfg(not(any(test, feature = "test-support")))]
+    // On wasm the parking machinery below is set up but unreachable (the
+    // Pending arm panics before parking).
+    #[cfg_attr(target_arch = "wasm32", allow(unused))]
     pub(crate) fn block_internal<Fut: Future>(
         &self,
         _background_only: bool,
@@ -222,16 +225,28 @@ impl BackgroundExecutor {
             match future.as_mut().poll(&mut cx) {
                 Poll::Ready(result) => return Ok(result),
                 Poll::Pending => {
-                    let timeout =
-                        deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
-                    if let Some(timeout) = timeout {
-                        if !parker.park_timeout(timeout)
-                            && deadline.is_some_and(|deadline| deadline < Instant::now())
-                        {
-                            return Err(future);
+                    // A future that is ready on the first poll never reaches
+                    // here, so blocking on completed work still succeeds on
+                    // the web; parking would deadlock the only thread.
+                    #[cfg(target_arch = "wasm32")]
+                    panic!(
+                        "cannot block on a pending future on the web: the browser has a single \
+                         thread, so nothing could make progress while it waits. Use spawn/await \
+                         instead."
+                    );
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        let timeout = deadline
+                            .map(|deadline| deadline.saturating_duration_since(Instant::now()));
+                        if let Some(timeout) = timeout {
+                            if !parker.park_timeout(timeout)
+                                && deadline.is_some_and(|deadline| deadline < Instant::now())
+                            {
+                                return Err(future);
+                            }
+                        } else {
+                            parker.park();
                         }
-                    } else {
-                        parker.park();
                     }
                 }
             }

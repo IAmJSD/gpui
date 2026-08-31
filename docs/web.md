@@ -82,10 +82,13 @@ Working:
   input handler where that is) so the candidate window appears in the right
   place; `update_ime_position` moves it too, for applications that call
   `Window::invalidate_character_coordinates`.
-- Windows are canvases. The first window claims `<canvas id="gpui">` if
-  the page provides one (and it is unclaimed); every window otherwise
-  gets its own full-viewport canvas appended to `<body>`, stacked in
-  creation order. Device-pixel-ratio changes and canvas resizes are
+- Windows are canvases. A `WindowKind::Normal` window fills the viewport:
+  the first claims `<canvas id="gpui">` if the page provides one (and it
+  is unclaimed), the rest get their own full-viewport canvases appended
+  to `<body>`, stacked in creation order. `PopUp` and `Floating` windows
+  (not yet browser-verified) are instead positioned canvases at their
+  requested bounds, above every normal window, and honor `resize()`;
+  closing any window removes its elements from the DOM. Device-pixel-ratio changes and canvas resizes are
   picked up every frame. Each window also owns the hidden `<input>` that
   its keyboard, composition and paste listeners hang off, so the window
   holding the DOM focus -- the newest one, until a click on another
@@ -98,9 +101,26 @@ Not yet implemented:
 
 - File drag-and-drop (gpui's file-drop events carry filesystem paths,
   which browser `File` objects do not have).
-- `BackgroundExecutor::block` cannot work on the web (there is no second
-  thread to make progress while the caller waits) and will panic if reached.
+- `BackgroundExecutor::block` cannot work on the web for futures that are
+  not already complete (there is no second thread to make progress while
+  the caller waits); it panics with a message saying so. Blocking on an
+  immediately-ready future still succeeds.
 - The `test-support` feature does not build on wasm.
+
+## Performance notes
+
+An idle window costs no GPU work: gpui only draws when a window is dirty
+and only re-presents briefly after input, so the per-frame
+`requestAnimationFrame` tick otherwise just polls the canvas size. Hidden
+tabs cost nothing at all -- browsers stop firing rAF for them. Continuous
+submits (one per frame) happen exactly when something animates, which is
+what the 60fps soak in the smoke tests measured.
+
+Bundle size is dominated by embedded fonts (`hello_web`: 5.9MB of wasm, of
+which ~4MB is code; `input_web` adds a 1.8MB CJK font). For production,
+subset your fonts to the scripts you need, and run the release wasm
+through `wasm-opt -Oz` from [binaryen](https://github.com/WebAssembly/binaryen)
+after `wasm-bindgen`, which typically shaves another 10-20%.
 
 ## Requirements
 

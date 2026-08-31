@@ -134,6 +134,10 @@ time.
   clipboard text is synchronously readable, so pasting from other
   applications works. IME composition goes through an invisible focused
   `<input>` that receives the composition events and follows the caret.
+  Popup and floating windows are positioned canvases at their requested
+  bounds; normal windows fill the viewport. CI
+  (`.github/workflows/ci.yml`) runs the full gate -- native check and
+  tests, wasm32, the web examples, and the Windows cross-check.
 
   Enabling the target took some dependency surgery: `gpui_util` and
   `gpui_http_client` are vendored under `vendor/` with their desktop-only
