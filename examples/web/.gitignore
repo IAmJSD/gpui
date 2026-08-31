@@ -1,0 +1,2 @@
+# Build output of the wasm-bindgen step in docs/web.md.
+pkg/
