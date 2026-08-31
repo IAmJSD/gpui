@@ -80,7 +80,9 @@ impl Platform for WebPlatform {
         // does not block. WebGPU setup is async (adapter and device requests
         // return promises), so it happens here, before the launch callback --
         // that way `open_window` and everything after it stay synchronous.
-        // The application lives on in the callbacks registered during launch.
+        // The application lives on because `Application::run` leaks its root
+        // reference on wasm; everything registered during launch (the frame
+        // loop, the DOM listeners) holds only `Weak` references.
         let gpu = self.gpu.clone();
         wasm_bindgen_futures::spawn_local(async move {
             match WebGpuContext::new().await {
