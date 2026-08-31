@@ -53,11 +53,6 @@ version = "0.3"
 [dependencies.futures-lite]
 version = "1.13"
 
-[dependencies.git2]
-version = "0.20.1"
-optional = true
-default-features = false
-
 [dependencies.globset]
 version = "0.4"
 
@@ -136,6 +131,11 @@ features = [
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies.dirs]
 version = "4.0"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies.git2]
+version = "0.20.1"
+optional = true
+default-features = false
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies.smol]
 version = "2.0"

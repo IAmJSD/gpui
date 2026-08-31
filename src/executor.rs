@@ -17,9 +17,10 @@ use std::{
         atomic::{AtomicUsize, Ordering::SeqCst},
     },
     task::{Context, Poll},
-    time::{Duration, Instant},
+    time::Duration,
 };
 use util::TryFutureExt;
+use web_time::Instant;
 use waker_fn::waker_fn;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -202,7 +203,7 @@ impl BackgroundExecutor {
         future: Fut,
         timeout: Option<Duration>,
     ) -> Result<Fut::Output, impl Future<Output = Fut::Output> + use<Fut>> {
-        use std::time::Instant;
+        use web_time::Instant;
 
         let mut future = Box::pin(future);
         if timeout == Some(Duration::ZERO) {

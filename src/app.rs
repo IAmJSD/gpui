@@ -7,11 +7,12 @@ use std::{
     path::{Path, PathBuf},
     rc::{Rc, Weak},
     sync::{Arc, atomic::Ordering::SeqCst},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use anyhow::{Context as _, Result, anyhow};
 use derive_more::{Deref, DerefMut};
+use web_time::Instant;
 use futures::{
     Future, FutureExt,
     channel::oneshot,

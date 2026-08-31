@@ -47,9 +47,10 @@ use std::{
         Arc, Weak,
         atomic::{AtomicUsize, Ordering::SeqCst},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 use util::post_inc;
+use web_time::Instant;
 use util::{ResultExt, measure};
 use uuid::Uuid;
 

@@ -12,7 +12,8 @@ use std::{
     sync::Arc,
 };
 
-use super::WebDispatcher;
+use super::{WebDispatcher, WebDisplay, WebGpuContext, WebWindow};
+use std::cell::RefCell;
 
 pub(crate) struct WebKeyboardLayout;
 
@@ -26,12 +27,16 @@ impl PlatformKeyboardLayout for WebKeyboardLayout {
     }
 }
 
-/// Stub platform for the web. Satisfies the `Platform` trait so gpui compiles
-/// for wasm32; windowing, input, and rendering are not implemented yet.
+/// The web platform. Text and input are not implemented yet; windowing and
+/// rendering go through a canvas and WebGPU.
 pub(crate) struct WebPlatform {
     background_executor: BackgroundExecutor,
     foreground_executor: ForegroundExecutor,
     text_system: Arc<dyn PlatformTextSystem>,
+    /// Populated by `run()` before the launch callback fires; `open_window`
+    /// requires it.
+    gpu: Rc<RefCell<Option<Arc<WebGpuContext>>>>,
+    active_window: RefCell<Option<AnyWindowHandle>>,
 }
 
 impl WebPlatform {
@@ -41,6 +46,8 @@ impl WebPlatform {
             background_executor: BackgroundExecutor::new(dispatcher.clone()),
             foreground_executor: ForegroundExecutor::new(dispatcher),
             text_system: Arc::new(NoopTextSystem::new()),
+            gpu: Rc::new(RefCell::new(None)),
+            active_window: RefCell::new(None),
         }
     }
 }
@@ -60,9 +67,24 @@ impl Platform for WebPlatform {
 
     fn run(&self, on_finish_launching: Box<dyn 'static + FnOnce()>) {
         // The browser owns the event loop, so unlike the desktop backends this
-        // does not block; the application only lives as long as the callbacks
-        // registered during launch.
-        on_finish_launching();
+        // does not block. WebGPU setup is async (adapter and device requests
+        // return promises), so it happens here, before the launch callback --
+        // that way `open_window` and everything after it stay synchronous.
+        // The application lives on in the callbacks registered during launch.
+        let gpu = self.gpu.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            match WebGpuContext::new().await {
+                Ok(context) => {
+                    *gpu.borrow_mut() = Some(Arc::new(context));
+                    on_finish_launching();
+                }
+                Err(error) => {
+                    web_sys::console::error_1(
+                        &format!("gpui: failed to initialize WebGPU: {error:#}").into(),
+                    );
+                }
+            }
+        });
     }
 
     fn quit(&self) {}
@@ -78,23 +100,31 @@ impl Platform for WebPlatform {
     fn unhide_other_apps(&self) {}
 
     fn displays(&self) -> Vec<Rc<dyn PlatformDisplay>> {
-        Vec::new()
+        vec![Rc::new(WebDisplay)]
     }
 
     fn primary_display(&self) -> Option<Rc<dyn PlatformDisplay>> {
-        None
+        Some(Rc::new(WebDisplay))
     }
 
     fn active_window(&self) -> Option<AnyWindowHandle> {
-        None
+        *self.active_window.borrow()
     }
 
     fn open_window(
         &self,
-        _handle: AnyWindowHandle,
-        _options: WindowParams,
+        handle: AnyWindowHandle,
+        options: WindowParams,
     ) -> Result<Box<dyn PlatformWindow>> {
-        Err(anyhow!("windows are not implemented yet on the web backend"))
+        let gpu = self.gpu.borrow().clone().ok_or_else(|| {
+            anyhow!(
+                "the GPU is not initialized; on the web, windows can only be opened \
+                 from (or after) the Application::run callback"
+            )
+        })?;
+        let window = WebWindow::new(&gpu, handle, options)?;
+        *self.active_window.borrow_mut() = Some(handle);
+        Ok(Box::new(window))
     }
 
     fn window_appearance(&self) -> WindowAppearance {

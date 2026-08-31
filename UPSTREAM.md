@@ -102,18 +102,36 @@ time.
   pads unconditionally and a `new_id` with no registered child handler
   panics the queue.
 
-- **`wasm32-unknown-unknown` compiles** (stage 1 of web support: compile
-  only). `cargo check --target wasm32-unknown-unknown` passes with default
-  features. A stub backend in `platform/web` satisfies the `Platform` trait --
-  it cannot open windows or dispatch tasks yet, it exists so the
-  target-selection cfgs in `platform.rs` have a fourth arm. `gpui_util` and
+- **A web platform backend** (`platform/web`, target
+  `wasm32-unknown-unknown`), documented in `docs/web.md`. The JS event loop
+  is the platform event loop: the dispatcher schedules runnables as
+  microtasks and `setTimeout`s, a window is an `HtmlCanvasElement` driven by
+  `requestAnimationFrame`, and rendering is a port of the blade renderer to
+  wgpu/WebGPU (`platform/web/renderer.rs` -- WebGL2 was not an option, the
+  shaders' storage-buffer instancing needs WebGPU). The WGSL is shared with
+  blade except for explicit `@group`/`@binding` decorations, which blade
+  injects but raw wgpu requires. `Platform::run` cannot block in a browser;
+  it performs the async WebGPU setup, then calls the launch callback, and
+  the app lives on in its registered callbacks. `Instant` is `web-time`'s
+  re-export crate-wide (std's panics on wasm; on native it is the same
+  type). Text, input, and clipboard are not implemented yet; text elements
+  render nothing (`NoopTextSystem`).
+
+  Enabling the target took some dependency surgery: `gpui_util` and
   `gpui_http_client` are vendored under `vendor/` with their desktop-only
-  modules cfg'd off for wasm (see `vendor/README.md`); `smol` is a
-  non-wasm dependency now (the executor uses `futures-lite`'s prelude, which
-  is what `smol::prelude` re-exports anyway), and `uuid` gets its randomness
-  from the browser via getrandom's `wasm_js` backend (`.cargo/config.toml`).
-  The `test-support` feature is not available on wasm. Windowing, input, a
-  dispatcher on the JS event loop, and a renderer are later stages.
+  modules cfg'd off for wasm (see `vendor/README.md`); `smol` is a non-wasm
+  dependency (the executor uses `futures-lite`'s prelude, which is what
+  `smol::prelude` re-exports anyway); `uuid` gets randomness from the
+  browser via getrandom's `wasm_js` backend (`.cargo/config.toml`). The
+  `test-support` feature is not available on wasm, and
+  `BackgroundExecutor::block` panics there (no second thread to make
+  progress while parked).
+
+  Everything through the renderer compiles and the WGSL validates under
+  naga 30, but **no browser was available during development** -- the first
+  run of `examples/hello_web.rs` in a real WebGPU browser is still owed, and
+  runtime-only wgpu surface/bind-group validation and visual correctness
+  are unverified.
 
 - **Images on the Linux clipboards.** Both Linux backends wrote
   `item.text().unwrap_or_default()` and nothing else, so copying a

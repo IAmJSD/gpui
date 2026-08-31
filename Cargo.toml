@@ -133,6 +133,10 @@ name = "hello_world"
 path = "examples/hello_world.rs"
 
 [[example]]
+name = "hello_web"
+path = "examples/hello_web.rs"
+
+[[example]]
 name = "image"
 path = "examples/image/image.rs"
 
@@ -420,8 +424,19 @@ features = [
 [dependencies.waker-fn]
 version = "1.2.0"
 
+# Drop-in std::time re-export on native; performance.now()-backed Instant on
+# wasm32, where std::time::Instant::now() panics.
+[dependencies.web-time]
+version = "1.1"
+
 [dev-dependencies.backtrace]
 version = "0.3"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies.console_error_panic_hook]
+version = "0.1"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies.console_log]
+version = "1.0"
 
 [dev-dependencies.collections]
 version = "0.2.2"
@@ -470,6 +485,42 @@ features = ["js"]
 [target.'cfg(target_arch = "wasm32")'.dependencies.getrandom]
 version = "0.3"
 features = ["wasm_js"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.wasm-bindgen]
+version = "0.2"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.wasm-bindgen-futures]
+version = "0.4"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.js-sys]
+version = "0.3"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.web-sys]
+version = "0.3"
+features = [
+    "console",
+    "CssStyleDeclaration",
+    "Document",
+    "DomRect",
+    "Element",
+    "HtmlCanvasElement",
+    "HtmlElement",
+    "Performance",
+    "Window",
+]
+
+# The web renderer targets WebGPU. fragile-send-sync-non-atomic-wasm makes
+# wgpu's JS-backed handles Send + Sync on single-threaded wasm, which the
+# PlatformAtlas trait requires; it would be unsound only with wasm threads,
+# which gpui does not use.
+[target.'cfg(target_arch = "wasm32")'.dependencies.wgpu]
+version = "30"
+default-features = false
+features = [
+    "webgpu",
+    "wgsl",
+    "fragile-send-sync-non-atomic-wasm",
+]
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.as-raw-xcb-connection]
 version = "1"
