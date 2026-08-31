@@ -41,7 +41,15 @@ Working:
   gpui marks an event handled), hover and focus tracking. Right-click
   reaches gpui; the browser context menu is suppressed. A key gpui leaves
   unhandled is fed to the window's input handler as text, the same way the
-  desktop backends do it, so typing lands in text fields.
+  desktop backends do it, so typing lands in text fields. Option/AltGr
+  characters (macOS option-a -> "å"; AltGr chords, which browsers report
+  as ctrl+alt) follow the macOS convention: the keystroke's `key` is the
+  physical key so bindings like alt-a still match, and the transformed
+  character rides in `key_char` and is inserted when gpui leaves the key
+  unbound (not yet browser-verified). Tab always has its browser default
+  suppressed -- it is a gpui navigation key, and the browser's response
+  would move the DOM focus off the window's hidden input and take the
+  keyboard with it.
 - Dark mode: `prefers-color-scheme` is reflected in `window_appearance` and
   appearance-change callbacks.
 - Cursor styles (CSS cursors) and `open_url` (new tab; subject to the

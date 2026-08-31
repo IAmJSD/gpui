@@ -622,14 +622,52 @@ fn keystroke_for(event: &KeyboardEvent) -> Keystroke {
         // names when lowercased, or fall through harmlessly unbound.
         key => key.to_lowercase(),
     };
+    let modifiers = keyboard_event_modifiers(event);
+
+    // Option/AltGr characters (macOS option-a -> "å", AltGr+2 -> "€", which
+    // browsers report as ctrl+alt): the DOM `key` is the transformed
+    // character, and `code` names the physical key. When those disagree, the
+    // keystroke follows the macOS convention -- `key` is the unmodified key so
+    // bindings like alt-a still match, and `key_char` carries the character
+    // the layout produced. `with_simulated_ime` never fills key_char for
+    // alt/ctrl chords, so a plain chord (its `key` and `code` agree) stays a
+    // chord.
+    if modifiers.alt && !modifiers.platform && dom_key.chars().count() == 1 {
+        if let Some(unmodified) = unmodified_key_from_code(&event.code()) {
+            if unmodified != key {
+                return Keystroke {
+                    modifiers,
+                    key: unmodified,
+                    key_char: Some(dom_key),
+                };
+            }
+        }
+    }
+
     Keystroke {
-        modifiers: keyboard_event_modifiers(event),
+        modifiers,
         key,
         key_char: None,
     }
     // Derives key_char ("a" -> "a", shift-a -> "A", enter -> "\n"; nothing
     // for ctrl/cmd chords) the same way simulated keystrokes do.
     .with_simulated_ime()
+}
+
+/// The key an unmodified press of this physical key would produce, for the
+/// codes where that is knowable ("KeyA".."KeyZ", "Digit0".."Digit9").
+fn unmodified_key_from_code(code: &str) -> Option<String> {
+    if let Some(letter) = code.strip_prefix("Key") {
+        if letter.len() == 1 && letter.chars().all(|c| c.is_ascii_uppercase()) {
+            return Some(letter.to_ascii_lowercase());
+        }
+    }
+    if let Some(digit) = code.strip_prefix("Digit") {
+        if digit.len() == 1 && digit.chars().all(|c| c.is_ascii_digit()) {
+            return Some(digit.to_string());
+        }
+    }
+    None
 }
 
 /// Registers a DOM event listener on `target` and keeps the closure alive in
@@ -924,11 +962,20 @@ fn setup_event_listeners(inner: &Rc<WebWindowInner>) {
         if result.default_prevented {
             event.prevent_default();
         }
+        // Tab is a gpui navigation key on every platform; the browser's own
+        // response to it would move the DOM focus off the hidden input and
+        // take the keyboard away from the window.
+        if keystroke.key == "tab" {
+            event.prevent_default();
+        }
         // gpui did not bind the key, so it is text: hand the character to the
         // window's input handler, the way every other backend does. Anything
-        // beyond shift is a chord, not typing.
+        // beyond shift is a chord, not typing -- except an Option/AltGr
+        // character, whose key_char only exists because the layout transformed
+        // the key (see keystroke_for).
+        let is_layout_transformed = keystroke.modifiers.alt && !keystroke.modifiers.platform;
         if result.propagate
-            && keystroke.modifiers.is_subset_of(&Modifiers::shift())
+            && (keystroke.modifiers.is_subset_of(&Modifiers::shift()) || is_layout_transformed)
             && let Some(key_char) = keystroke.key_char.as_ref()
         {
             inner.with_input_handler(|handler| {
