@@ -1,12 +1,12 @@
 use super::{WebDisplay, WebGpuContext, WebGpuRenderer};
 use crate::{
-    AnyWindowHandle, Bounds, Capslock, DevicePixels, DispatchEventResult, GpuSpecs, KeyDownEvent,
-    KeyUpEvent, Keystroke, Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent,
-    MouseExitEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection, Pixels, PlatformAtlas,
-    PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton,
-    PromptLevel, RequestFrameOptions, Scene, ScrollDelta, ScrollWheelEvent, Size,
-    TouchPhase, WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowParams, point,
-    px, size,
+    AnyWindowHandle, Bounds, Capslock, ClipboardItem, DevicePixels, DispatchEventResult, GpuSpecs,
+    KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, ModifiersChangedEvent, MouseButton,
+    MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection, PinchEvent,
+    Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow,
+    Point, PromptButton, PromptLevel, RequestFrameOptions, Scene, ScrollDelta, ScrollWheelEvent,
+    Size, TouchPhase, WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowParams,
+    point, px, size,
 };
 use anyhow::{Context as _, Result};
 use futures::channel::oneshot;
@@ -16,7 +16,9 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::time::Duration;
 use wasm_bindgen::{JsCast, prelude::Closure};
-use web_sys::{HtmlCanvasElement, KeyboardEvent, PointerEvent, WheelEvent};
+use web_sys::{
+    CompositionEvent, HtmlCanvasElement, HtmlInputElement, KeyboardEvent, PointerEvent, WheelEvent,
+};
 use web_time::Instant;
 
 /// If an element with this id exists and is a `<canvas>`, the window renders
@@ -32,6 +34,15 @@ const DOUBLE_CLICK_DISTANCE: Pixels = px(4.0);
 
 /// Kept in sync with SCROLL_LINES in the Linux backends.
 const SCROLL_LINES: f32 = 3.0;
+
+/// A ctrl+wheel pinch gesture ends this long after its last wheel event
+/// (the browser gives no explicit end for synthesized pinch-wheels).
+const PINCH_END_DELAY_MS: i32 = 150;
+
+/// How long to wait for the browser's `paste` event after a paste keystroke
+/// before giving up and dispatching the keystroke without fresh clipboard
+/// contents.
+const PASTE_EVENT_DELAY_MS: i32 = 100;
 
 #[derive(Default)]
 struct Callbacks {
@@ -54,6 +65,21 @@ struct ClickState {
     count: usize,
 }
 
+#[derive(Default)]
+struct PinchState {
+    /// A synthesized ctrl+wheel pinch is in progress.
+    wheel_active: bool,
+    /// Invalidates the pending end-of-gesture timeout when another wheel
+    /// event arrives (timeouts cannot be cancelled without keeping their
+    /// closures; letting stale ones fire and no-op is simpler).
+    wheel_generation: u64,
+    /// A Safari GestureEvent sequence is in progress (takes precedence over
+    /// the ctrl+wheel path).
+    gesture_active: bool,
+    /// GestureEvent reports cumulative scale; gpui wants per-event deltas.
+    gesture_previous_scale: f32,
+}
+
 struct WebWindowState {
     renderer: WebGpuRenderer,
     input_handler: Option<PlatformInputHandler>,
@@ -65,13 +91,33 @@ struct WebWindowState {
 
 pub(crate) struct WebWindowInner {
     canvas: HtmlCanvasElement,
+    /// Identifies this window's canvas in its `data-raw-handle` attribute
+    /// and raw window handle.
+    handle_id: u32,
+    /// An invisible focused `<input>`: composition (IME, dead keys) only
+    /// happens on editable elements, and key events bubble from it to the
+    /// window-level listeners. `update_ime_position` moves it so the IME
+    /// popup appears near the caret.
+    ime_input: HtmlInputElement,
+    /// The platform's clipboard mirror; the `paste` listener refreshes it
+    /// with real (external) clipboard contents before gpui acts on a paste
+    /// keystroke.
+    clipboard: Rc<RefCell<Option<ClipboardItem>>>,
     state: RefCell<WebWindowState>,
+    pinch: RefCell<PinchState>,
+    /// A paste keystroke being held back until the `paste` event delivers
+    /// the clipboard contents (or the fallback timeout fires).
+    pending_paste_keystroke: RefCell<Option<KeyDownEvent>>,
     callbacks: Callbacks,
     active: Cell<bool>,
     hovered: Cell<bool>,
     /// The DOM event listener closures; dropping them detaches nothing, but
     /// they must stay alive for as long as the listeners can fire.
     listeners: RefCell<Vec<Box<dyn Any>>>,
+    /// Set right after construction; lets methods hand a `Weak` of this
+    /// window to timeout closures without threading the `Rc` around (which,
+    /// captured in a stored listener, would leak the window through a cycle).
+    weak_self: RefCell<Weak<WebWindowInner>>,
 }
 
 pub(crate) struct WebWindow(Rc<WebWindowInner>);
@@ -79,6 +125,7 @@ pub(crate) struct WebWindow(Rc<WebWindowInner>);
 impl WebWindow {
     pub(crate) fn new(
         gpu: &Arc<WebGpuContext>,
+        clipboard: Rc<RefCell<Option<ClipboardItem>>>,
         _handle: AnyWindowHandle,
         _params: WindowParams,
     ) -> Result<Self> {
@@ -87,9 +134,12 @@ impl WebWindow {
             .document()
             .context("no `document`")?;
 
+        // A `data-raw-handle` attribute means the canvas is already claimed
+        // by an earlier window; each window needs its own canvas.
         let canvas = match document
             .get_element_by_id(CANVAS_ELEMENT_ID)
             .and_then(|element| element.dyn_into::<HtmlCanvasElement>().ok())
+            .filter(|canvas| !canvas.has_attribute("data-raw-handle"))
         {
             Some(canvas) => canvas,
             None => {
@@ -98,7 +148,6 @@ impl WebWindow {
                     .ok()
                     .and_then(|element| element.dyn_into::<HtmlCanvasElement>().ok())
                     .context("failed to create a canvas element")?;
-                canvas.set_id(CANVAS_ELEMENT_ID);
                 let style = canvas.style();
                 style.set_property("position", "fixed").ok();
                 style.set_property("inset", "0").ok();
@@ -115,7 +164,37 @@ impl WebWindow {
         };
 
         // raw-window-handle's convention for addressing canvases.
-        canvas.set_attribute("data-raw-handle", "1").ok();
+        let handle_id = next_handle_id();
+        canvas
+            .set_attribute("data-raw-handle", &handle_id.to_string())
+            .ok();
+
+        let ime_input = document
+            .create_element("input")
+            .ok()
+            .and_then(|element| element.dyn_into::<HtmlInputElement>().ok())
+            .context("failed to create the IME input element")?;
+        {
+            let style = ime_input.style();
+            style.set_property("position", "fixed").ok();
+            style.set_property("left", "0").ok();
+            style.set_property("top", "0").ok();
+            style.set_property("width", "1px").ok();
+            style.set_property("height", "1px").ok();
+            style.set_property("opacity", "0").ok();
+            style.set_property("border", "none").ok();
+            style.set_property("padding", "0").ok();
+            style.set_property("outline", "none").ok();
+        }
+        ime_input.set_attribute("autocomplete", "off").ok();
+        ime_input.set_attribute("autocapitalize", "off").ok();
+        ime_input.set_attribute("spellcheck", "false").ok();
+        document
+            .body()
+            .context("document has no body")?
+            .append_child(&ime_input)
+            .ok()
+            .context("failed to append the IME input to the document body")?;
 
         let device_size = device_size_for(&canvas);
         canvas.set_width(device_size.width.0 as u32);
@@ -125,6 +204,9 @@ impl WebWindow {
 
         let window = Self(Rc::new(WebWindowInner {
             canvas,
+            handle_id,
+            ime_input,
+            clipboard,
             state: RefCell::new(WebWindowState {
                 renderer,
                 input_handler: None,
@@ -133,6 +215,8 @@ impl WebWindow {
                 capslock: Capslock::default(),
                 click: None,
             }),
+            pinch: RefCell::new(PinchState::default()),
+            pending_paste_keystroke: RefCell::new(None),
             callbacks: Callbacks::default(),
             active: Cell::new(
                 document
@@ -141,11 +225,24 @@ impl WebWindow {
             ),
             hovered: Cell::new(false),
             listeners: RefCell::new(Vec::new()),
+            weak_self: RefCell::new(Weak::new()),
         }));
+        *window.0.weak_self.borrow_mut() = Rc::downgrade(&window.0);
         start_frame_loop(Rc::downgrade(&window.0));
         setup_event_listeners(&window.0);
         Ok(window)
     }
+}
+
+fn next_handle_id() -> u32 {
+    std::thread_local! {
+        static NEXT_HANDLE_ID: Cell<u32> = const { Cell::new(1) };
+    }
+    NEXT_HANDLE_ID.with(|next| {
+        let id = next.get();
+        next.set(id + 1);
+        id
+    })
 }
 
 fn scale_factor() -> f32 {
@@ -266,6 +363,93 @@ impl WebWindowInner {
         });
         count
     }
+
+    /// Runs `f` with the input handler taken out of the window state, so the
+    /// reentrant window update inside the handler cannot hit a borrowed
+    /// RefCell.
+    fn with_input_handler(&self, f: impl FnOnce(&mut PlatformInputHandler)) {
+        let handler = self.state.borrow_mut().input_handler.take();
+        if let Some(mut handler) = handler {
+            f(&mut handler);
+            let mut state = self.state.borrow_mut();
+            if state.input_handler.is_none() {
+                state.input_handler = Some(handler);
+            }
+        }
+    }
+
+    fn dispatch_pinch(&self, position: Point<Pixels>, modifiers: Modifiers, phase: TouchPhase) {
+        self.dispatch_pinch_delta(position, modifiers, phase, 1.0);
+    }
+
+    fn dispatch_pinch_delta(
+        &self,
+        position: Point<Pixels>,
+        modifiers: Modifiers,
+        phase: TouchPhase,
+        delta: f32,
+    ) {
+        self.dispatch_input(PlatformInput::Pinch(PinchEvent {
+            position,
+            delta,
+            // Accumulated by `Window` from the deltas.
+            scale: 1.0,
+            modifiers,
+            phase,
+        }));
+    }
+
+    /// A synthesized ctrl+wheel pinch has no end event; each wheel event
+    /// (re)schedules this timeout, and only the newest generation acts.
+    fn schedule_wheel_pinch_end(&self, position: Point<Pixels>, modifiers: Modifiers) {
+        let generation = self.pinch.borrow().wheel_generation;
+        let weak = self.weak_self.borrow().clone();
+        let closure = Closure::once_into_js(move || {
+            let Some(inner) = weak.upgrade() else {
+                return;
+            };
+            {
+                let mut pinch = inner.pinch.borrow_mut();
+                if !pinch.wheel_active || pinch.wheel_generation != generation {
+                    return;
+                }
+                pinch.wheel_active = false;
+            }
+            inner.dispatch_pinch(position, modifiers, TouchPhase::Ended);
+        });
+        if let Some(window) = web_sys::window() {
+            window
+                .set_timeout_with_callback_and_timeout_and_arguments_0(
+                    closure.unchecked_ref(),
+                    PINCH_END_DELAY_MS,
+                )
+                .ok();
+        }
+    }
+
+    /// A paste keystroke waits for the `paste` event; if none arrives (no
+    /// clipboard permission, remapped binding, ...) the keystroke must still
+    /// reach the application.
+    fn schedule_paste_fallback(&self) {
+        let weak = self.weak_self.borrow().clone();
+        let closure = Closure::once_into_js(move || {
+            let Some(inner) = weak.upgrade() else {
+                return;
+            };
+            let pending = inner.pending_paste_keystroke.borrow_mut().take();
+            if let Some(event) = pending {
+                inner.dispatch_input(PlatformInput::KeyDown(event));
+            }
+        });
+        if let Some(window) = web_sys::window() {
+            window
+                .set_timeout_with_callback_and_timeout_and_arguments_0(
+                    closure.unchecked_ref(),
+                    PASTE_EVENT_DELAY_MS,
+                )
+                .ok();
+        }
+    }
 }
 
 /// Put a taken callback back unless a reentrant call installed a new one
@@ -343,6 +527,30 @@ fn pointer_pressure(event: &PointerEvent) -> f32 {
 
 fn is_modifier_key(key: &str) -> bool {
     matches!(key, "Shift" | "Control" | "Alt" | "Meta" | "CapsLock")
+}
+
+/// Safari's GestureEvent is nonstandard, so its properties come through
+/// reflection.
+fn gesture_event_scale(event: &web_sys::Event) -> f32 {
+    js_sys::Reflect::get(event.as_ref(), &"scale".into())
+        .ok()
+        .and_then(|value| value.as_f64())
+        .unwrap_or(1.0) as f32
+}
+
+fn gesture_event_position(inner: &WebWindowInner, event: &web_sys::Event) -> Point<Pixels> {
+    let coordinate = |name: &str| {
+        js_sys::Reflect::get(event.as_ref(), &name.into())
+            .ok()
+            .and_then(|value| value.as_f64())
+    };
+    match (coordinate("clientX"), coordinate("clientY")) {
+        (Some(x), Some(y)) => {
+            let rect = inner.canvas.get_bounding_client_rect();
+            point(px((x - rect.left()) as f32), px((y - rect.top()) as f32))
+        }
+        _ => inner.state.borrow().mouse_position,
+    }
 }
 
 /// Translates a DOM `KeyboardEvent.key` value into gpui's keystroke, matching
@@ -439,6 +647,9 @@ fn setup_event_listeners(inner: &Rc<WebWindowInner>) {
         // Keep receiving pointermove/pointerup while dragging outside the
         // canvas.
         inner.canvas.set_pointer_capture(event.pointer_id()).ok();
+        // Keyboard input, and IME composition in particular, targets the
+        // hidden input; key events bubble from it to the window listeners.
+        inner.ime_input.focus().ok();
         let result = inner.dispatch_input(PlatformInput::MouseDown(MouseDownEvent {
             button,
             position,
@@ -510,22 +721,95 @@ fn setup_event_listeners(inner: &Rc<WebWindowInner>) {
     });
 
     // Must be non-passive to be able to stop the page from scrolling.
-    add_listener::<WheelEvent>(inner, canvas, "wheel", Some(false), |inner, event| {
-        let position = mouse_event_position(&event);
-        // The DOM's positive-delta direction is the opposite of gpui's.
-        let (dx, dy) = (-event.delta_x() as f32, -event.delta_y() as f32);
-        let delta = match event.delta_mode() {
-            WheelEvent::DOM_DELTA_PIXEL => ScrollDelta::Pixels(point(px(dx), px(dy))),
-            WheelEvent::DOM_DELTA_LINE => ScrollDelta::Lines(point(dx, dy)),
-            // A page is approximated as one wheel notch's worth of lines.
-            _ => ScrollDelta::Lines(point(dx * SCROLL_LINES, dy * SCROLL_LINES)),
+    {
+        add_listener::<WheelEvent>(inner, canvas, "wheel", Some(false), move |inner, event| {
+            let position = mouse_event_position(&event);
+            let modifiers = mouse_event_modifiers(&event);
+
+            // Browsers synthesize ctrl+wheel for trackpad pinches (and a real
+            // ctrl+wheel conventionally means zoom as well). Safari reports
+            // pinches through GestureEvents instead, which take precedence.
+            if event.ctrl_key() && !inner.pinch.borrow().gesture_active {
+                let started = {
+                    let mut pinch = inner.pinch.borrow_mut();
+                    pinch.wheel_generation += 1;
+                    !std::mem::replace(&mut pinch.wheel_active, true)
+                };
+                if started {
+                    inner.dispatch_pinch(position, modifiers, TouchPhase::Started);
+                }
+                let dy_pixels = match event.delta_mode() {
+                    WheelEvent::DOM_DELTA_PIXEL => event.delta_y() as f32,
+                    // Pinch-wheels are pixel-mode in practice; a line is
+                    // roughly a text line's worth.
+                    _ => event.delta_y() as f32 * 16.0,
+                };
+                // The conventional web mapping: scale multiplier per event,
+                // exponential in the wheel delta, >1 when pinching out.
+                let delta = (-dy_pixels / 100.0).exp();
+                inner.dispatch_pinch_delta(position, modifiers, TouchPhase::Moved, delta);
+                inner.schedule_wheel_pinch_end(position, modifiers);
+                // Always consumed: the browser would otherwise zoom the page.
+                event.prevent_default();
+                return;
+            }
+
+            // The DOM's positive-delta direction is the opposite of gpui's.
+            let (dx, dy) = (-event.delta_x() as f32, -event.delta_y() as f32);
+            let delta = match event.delta_mode() {
+                WheelEvent::DOM_DELTA_PIXEL => ScrollDelta::Pixels(point(px(dx), px(dy))),
+                WheelEvent::DOM_DELTA_LINE => ScrollDelta::Lines(point(dx, dy)),
+                // A page is approximated as one wheel notch's worth of lines.
+                _ => ScrollDelta::Lines(point(dx * SCROLL_LINES, dy * SCROLL_LINES)),
+            };
+            inner.dispatch_input(PlatformInput::ScrollWheel(ScrollWheelEvent {
+                position,
+                delta,
+                modifiers,
+                touch_phase: TouchPhase::Moved,
+            }));
+            event.prevent_default();
+        });
+    }
+
+    // Safari's nonstandard pinch events; web-sys has no bindings, so `scale`
+    // and the position come through js_sys::Reflect. Chrome and Firefox never
+    // fire these.
+    add_listener::<web_sys::Event>(inner, canvas, "gesturestart", None, |inner, event| {
+        {
+            let mut pinch = inner.pinch.borrow_mut();
+            pinch.gesture_active = true;
+            pinch.gesture_previous_scale = 1.0;
+        }
+        let position = gesture_event_position(inner, &event);
+        let modifiers = inner.state.borrow().modifiers;
+        inner.dispatch_pinch(position, modifiers, TouchPhase::Started);
+        // Stop Safari from zooming the page.
+        event.prevent_default();
+    });
+
+    add_listener::<web_sys::Event>(inner, canvas, "gesturechange", None, |inner, event| {
+        let scale = gesture_event_scale(&event);
+        let delta = {
+            let mut pinch = inner.pinch.borrow_mut();
+            if !pinch.gesture_active || pinch.gesture_previous_scale <= 0.0 {
+                return;
+            }
+            let delta = scale / pinch.gesture_previous_scale;
+            pinch.gesture_previous_scale = scale;
+            delta
         };
-        inner.dispatch_input(PlatformInput::ScrollWheel(ScrollWheelEvent {
-            position,
-            delta,
-            modifiers: mouse_event_modifiers(&event),
-            touch_phase: TouchPhase::Moved,
-        }));
+        let position = gesture_event_position(inner, &event);
+        let modifiers = inner.state.borrow().modifiers;
+        inner.dispatch_pinch_delta(position, modifiers, TouchPhase::Moved, delta);
+        event.prevent_default();
+    });
+
+    add_listener::<web_sys::Event>(inner, canvas, "gestureend", None, |inner, event| {
+        inner.pinch.borrow_mut().gesture_active = false;
+        let position = gesture_event_position(inner, &event);
+        let modifiers = inner.state.borrow().modifiers;
+        inner.dispatch_pinch(position, modifiers, TouchPhase::Ended);
         event.prevent_default();
     });
 
@@ -541,6 +825,12 @@ fn setup_event_listeners(inner: &Rc<WebWindowInner>) {
     let window_target: &web_sys::EventTarget = window.as_ref();
 
     add_listener::<KeyboardEvent>(inner, window_target, "keydown", None, |inner, event| {
+        // During IME composition the composition events carry the text; the
+        // interleaved synthetic key events (keyCode 229) must not dispatch.
+        // A dead key ("Dead") starts a composition of its own.
+        if event.is_composing() || event.key() == "Dead" {
+            return;
+        }
         let modifiers = keyboard_event_modifiers(&event);
         let capslock = Capslock {
             on: event.get_modifier_state("CapsLock"),
@@ -558,8 +848,27 @@ fn setup_event_listeners(inner: &Rc<WebWindowInner>) {
             return;
         }
         inner.state.borrow_mut().modifiers = modifiers;
+        let keystroke = keystroke_for(&event);
+
+        // A paste keystroke is held back so the browser's `paste` event --
+        // the one place external clipboard contents are synchronously
+        // readable -- can refresh the clipboard mirror first. Not
+        // preventDefault'ed: that would suppress the paste event itself.
+        if (modifiers.platform || modifiers.control)
+            && !modifiers.alt
+            && keystroke.key == "v"
+            && !event.repeat()
+        {
+            *inner.pending_paste_keystroke.borrow_mut() = Some(KeyDownEvent {
+                keystroke,
+                is_held: false,
+            });
+            inner.schedule_paste_fallback();
+            return;
+        }
+
         let result = inner.dispatch_input(PlatformInput::KeyDown(KeyDownEvent {
-            keystroke: keystroke_for(&event),
+            keystroke,
             is_held: event.repeat(),
         }));
         if result.default_prevented {
@@ -568,6 +877,9 @@ fn setup_event_listeners(inner: &Rc<WebWindowInner>) {
     });
 
     add_listener::<KeyboardEvent>(inner, window_target, "keyup", None, |inner, event| {
+        if event.is_composing() || event.key() == "Dead" {
+            return;
+        }
         let modifiers = keyboard_event_modifiers(&event);
         let capslock = Capslock {
             on: event.get_modifier_state("CapsLock"),
@@ -590,6 +902,46 @@ fn setup_event_listeners(inner: &Rc<WebWindowInner>) {
         if result.default_prevented {
             event.prevent_default();
         }
+    });
+
+    add_listener::<web_sys::ClipboardEvent>(inner, window_target, "paste", None, |inner, event| {
+        // Within this event the external clipboard is synchronously
+        // readable; refresh the mirror before letting gpui act.
+        if let Some(data) = event.clipboard_data() {
+            if let Ok(text) = data.get_data("text/plain") {
+                if !text.is_empty() {
+                    *inner.clipboard.borrow_mut() = Some(ClipboardItem::new_string(text));
+                }
+            }
+        }
+        let pending = inner.pending_paste_keystroke.borrow_mut().take();
+        if let Some(key_down) = pending {
+            inner.dispatch_input(PlatformInput::KeyDown(key_down));
+            event.prevent_default();
+        }
+    });
+
+    let ime_target: &web_sys::EventTarget = inner.ime_input.as_ref();
+
+    add_listener::<CompositionEvent>(inner, ime_target, "compositionupdate", None, |inner, event| {
+        let text = event.data().unwrap_or_default();
+        inner.with_input_handler(|handler| {
+            handler.replace_and_mark_text_in_range(None, &text, None);
+        });
+    });
+
+    add_listener::<CompositionEvent>(inner, ime_target, "compositionend", None, |inner, event| {
+        let text = event.data().unwrap_or_default();
+        inner.with_input_handler(|handler| {
+            if text.is_empty() {
+                handler.unmark_text();
+            } else {
+                handler.replace_text_in_range(None, &text);
+            }
+        });
+        // The composed text also landed in the hidden input; it must not
+        // accumulate.
+        inner.ime_input.set_value("");
     });
 
     add_listener::<web_sys::Event>(inner, window_target, "focus", None, |inner, _event| {
@@ -626,8 +978,9 @@ impl raw_window_handle::HasWindowHandle for WebWindow {
     fn window_handle(
         &self,
     ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
-        let raw =
-            raw_window_handle::RawWindowHandle::Web(raw_window_handle::WebWindowHandle::new(1));
+        let raw = raw_window_handle::RawWindowHandle::Web(raw_window_handle::WebWindowHandle::new(
+            self.0.handle_id,
+        ));
         Ok(unsafe { raw_window_handle::WindowHandle::borrow_raw(raw) })
     }
 }
@@ -715,7 +1068,7 @@ impl PlatformWindow for WebWindow {
     }
 
     fn activate(&self) {
-        self.0.canvas.focus().ok();
+        self.0.ime_input.focus().ok();
     }
 
     fn is_active(&self) -> bool {
@@ -798,5 +1151,14 @@ impl PlatformWindow for WebWindow {
         Some(self.0.state.borrow().renderer.gpu_specs())
     }
 
-    fn update_ime_position(&self, _bounds: Bounds<Pixels>) {}
+    fn update_ime_position(&self, bounds: Bounds<Pixels>) {
+        // The IME popup anchors to the hidden input, so park it at the caret.
+        let style = self.0.ime_input.style();
+        style
+            .set_property("left", &format!("{}px", bounds.origin.x.0))
+            .ok();
+        style
+            .set_property("top", &format!("{}px", bounds.origin.y.0))
+            .ok();
+    }
 }

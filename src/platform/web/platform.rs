@@ -27,8 +27,8 @@ impl PlatformKeyboardLayout for WebKeyboardLayout {
     }
 }
 
-/// The web platform. Text and input are not implemented yet; windowing and
-/// rendering go through a canvas and WebGPU.
+/// The web platform: canvas windows rendered through WebGPU, cosmic-text for
+/// text, DOM events for input. See docs/web.md for status and limitations.
 pub(crate) struct WebPlatform {
     background_executor: BackgroundExecutor,
     foreground_executor: ForegroundExecutor,
@@ -38,11 +38,11 @@ pub(crate) struct WebPlatform {
     gpu: Rc<RefCell<Option<Arc<WebGpuContext>>>>,
     active_window: RefCell<Option<AnyWindowHandle>>,
     /// The browser's clipboard is async and permission-gated while gpui's
-    /// `read_from_clipboard` is synchronous, so reads come from this mirror
-    /// of what the application last wrote. Text is additionally pushed to
-    /// the real clipboard (best effort) so it can be pasted outside the app;
-    /// content copied in other pages is not visible here.
-    clipboard: RefCell<Option<ClipboardItem>>,
+    /// `read_from_clipboard` is synchronous, so reads come from this mirror.
+    /// Writes land here (and, for text, on the real clipboard, best effort);
+    /// the window's `paste` listener refreshes it with external clipboard
+    /// contents before a paste keystroke is dispatched.
+    clipboard: Rc<RefCell<Option<ClipboardItem>>>,
 }
 
 impl WebPlatform {
@@ -57,7 +57,7 @@ impl WebPlatform {
             text_system: Arc::new(crate::CosmicTextSystem::new()),
             gpu: Rc::new(RefCell::new(None)),
             active_window: RefCell::new(None),
-            clipboard: RefCell::new(None),
+            clipboard: Rc::new(RefCell::new(None)),
         }
     }
 }
@@ -134,7 +134,7 @@ impl Platform for WebPlatform {
                  from (or after) the Application::run callback"
             )
         })?;
-        let window = WebWindow::new(&gpu, handle, options)?;
+        let window = WebWindow::new(&gpu, self.clipboard.clone(), handle, options)?;
         *self.active_window.borrow_mut() = Some(handle);
         Ok(Box::new(window))
     }

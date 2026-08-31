@@ -125,11 +125,15 @@ time.
   (`hello_web` embeds IBM Plex Sans, which is what the default
   `.SystemUIFont` resolves to). DOM pointer/keyboard/wheel events are
   translated to `PlatformInput` (including pen pressure and manual
-  multi-click counting), dark mode tracks `prefers-color-scheme`, cursor
-  styles map to CSS cursors, and the clipboard is a write-through mirror
-  (reads are synchronous in gpui; the browser's clipboard is async and
-  permission-gated, so content copied outside the application cannot be
-  read yet). IME composition is not implemented.
+  multi-click counting), pinch gestures arrive via the ctrl+wheel events
+  browsers synthesize (plus Safari's GestureEvents), dark mode tracks
+  `prefers-color-scheme`, and cursor styles map to CSS cursors. The
+  clipboard is a mirror (reads are synchronous in gpui; the browser's is
+  async and permission-gated) with one enhancement: paste keystrokes are
+  briefly held for the browser's `paste` event, the only place external
+  clipboard text is synchronously readable, so pasting from other
+  applications works. IME composition goes through an invisible focused
+  `<input>` that receives the composition events and follows the caret.
 
   Enabling the target took some dependency surgery: `gpui_util` and
   `gpui_http_client` are vendored under `vendor/` with their desktop-only
@@ -141,11 +145,15 @@ time.
   `BackgroundExecutor::block` panics there (no second thread to make
   progress while parked).
 
-  Everything through the renderer compiles and the WGSL validates under
-  naga 30, but **no browser was available during development** -- the first
-  run of `examples/hello_web.rs` in a real WebGPU browser is still owed, and
-  runtime-only wgpu surface/bind-group validation and visual correctness
-  are unverified.
+  Smoke-tested in Chrome 151 and Firefox 148 on macOS/Apple M4:
+  rendering, text, mouse input, resize, dark mode, and a 3-minute 60fps
+  soak with zero console/GPU errors (the run surfaced and fixed three
+  real bugs: an application-lifetime bug in the non-blocking `run`, a
+  cross-stage bind-group derivation conflict wgpu-core rejects but Dawn
+  accepts, and a cursor gated on focus instead of hover). Safari, and
+  the additions that came after that pass -- pinch, external paste, IME
+  composition -- have not run in a browser yet. macOS *build hosts* need
+  llvm-ar for the wasm target; see docs/web.md.
 
 - **Images on the Linux clipboards.** Both Linux backends wrote
   `item.text().unwrap_or_default()` and nothing else, so copying a

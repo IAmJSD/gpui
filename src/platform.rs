@@ -901,9 +901,6 @@ pub(crate) struct PlatformInputHandler {
     ),
     allow(dead_code)
 )]
-// The IME entry points are only reached from the window backends; the web
-// backend has no windows yet.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 impl PlatformInputHandler {
     pub fn new(cx: AsyncWindowContext, handler: Box<dyn InputHandler>) -> Self {
         Self { cx, handler }

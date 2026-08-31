@@ -7,6 +7,11 @@ driven by `requestAnimationFrame`.
 
 ## Status
 
+Smoke-tested in Chrome 151 and Firefox 148 (macOS, Apple M4): rendering,
+text, mouse input, resize, dark-mode tracking, and a 3-minute soak at a
+solid 60fps with no leaks or GPU errors. Safari and the newest additions
+below (pinch, external paste, IME) have not had a browser pass yet.
+
 Working:
 
 - The full gpui programming model: entities, layout (taffy), styling,
@@ -28,21 +33,36 @@ Working:
   appearance-change callbacks.
 - Cursor styles (CSS cursors) and `open_url` (new tab; subject to the
   popup blocker outside user gestures).
-- Clipboard, with a caveat: the browser clipboard is async and
-  permission-gated while gpui's `read_from_clipboard` is synchronous, so
-  reads are served from a mirror of what the application last wrote.
-  Copying to other apps works for text (best effort); pasting content
-  copied *outside* the application does not reach gpui yet.
-- A single window, backed by a canvas. If the page contains
-  `<canvas id="gpui">` it is used; otherwise a full-viewport canvas is
-  appended to `<body>`. Device-pixel-ratio changes and canvas resizes are
+- **Pinch gestures**, both ways browsers report them: the ctrl+wheel
+  events Chrome/Firefox/Edge synthesize for trackpad pinches (a real
+  ctrl+wheel also zooms, which matches web convention -- the two are
+  indistinguishable), and Safari's nonstandard GestureEvents. Sequences
+  have no explicit end on the wheel path, so the gesture ends 150ms after
+  its last event.
+- Clipboard, in both directions with caveats: gpui's
+  `read_from_clipboard` is synchronous while the browser clipboard is
+  async and permission-gated, so reads are served from a mirror. Writes
+  update the mirror and (for text, best effort) the real clipboard. For
+  external content, a paste keystroke (ctrl/cmd-v) is held back briefly
+  so the browser's `paste` event -- the one place external clipboard text
+  is synchronously readable -- can refresh the mirror first; if no paste
+  event arrives within 100ms the keystroke is dispatched as-is. Pasting
+  via a non-default keybinding therefore reads the mirror only.
+- **IME composition** (first cut, not yet browser-verified): an invisible
+  focused `<input>` receives composition events; compositionupdate marks
+  text via the window's input handler, compositionend commits it, and
+  `update_ime_position` parks the element at the caret so the IME popup
+  appears in the right place. Key events are suppressed while composing.
+- Windows are canvases. The first window claims `<canvas id="gpui">` if
+  the page provides one (and it is unclaimed); every window otherwise
+  gets its own full-viewport canvas appended to `<body>`, stacked in
+  creation order. Device-pixel-ratio changes and canvas resizes are
   picked up every frame.
 
 Not yet implemented:
 
-- IME composition (dead keys and CJK input methods do not compose;
-  plain typing works via key events).
-- Multiple windows, file drag-and-drop, pinch gestures.
+- File drag-and-drop (gpui's file-drop events carry filesystem paths,
+  which browser `File` objects do not have).
 - `BackgroundExecutor::block` cannot work on the web (there is no second
   thread to make progress while the caller waits) and will panic if reached.
 - The `test-support` feature does not build on wasm.
@@ -53,6 +73,22 @@ Not yet implemented:
 - `rustup target add wasm32-unknown-unknown`
 - `cargo install wasm-bindgen-cli --version <version>` where `<version>`
   matches the `wasm-bindgen` entry in `Cargo.lock`.
+
+## macOS build hosts
+
+`cargo build --target wasm32-unknown-unknown` (not `check`, which never
+archives) fails on macOS hosts: the `psm` crate ships a prebuilt
+`wasm32.o` that Xcode's Mach-O-only `ar`/`ranlib` archive into a library
+LLVM cannot read (`LLVM error: section too large`). Point the archiver at
+LLVM's own tools:
+
+```sh
+brew install llvm
+export AR_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/llvm-ar
+export RANLIB_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/llvm-ranlib
+```
+
+Linux hosts are unaffected.
 
 ## Building the example
 
