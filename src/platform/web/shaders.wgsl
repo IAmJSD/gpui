@@ -162,9 +162,21 @@ fn to_device_position_transformed(unit_vertex: vec2<f32>, bounds: Bounds, transf
     return to_device_position_impl(transformed);
 }
 
-fn to_tile_position(unit_vertex: vec2<f32>, tile: AtlasTile) -> vec2<f32> {
-  let atlas_size = vec2<f32>(textureDimensions(t_sprite, 0));
-  return (vec2<f32>(tile.bounds.origin) + unit_vertex * vec2<f32>(tile.bounds.size)) / atlas_size;
+// Atlas coordinates are carried through the varyings in texels and only
+// normalised in the fragment stage. Dividing by the (constant) atlas size
+// commutes with interpolation, so the sampled position is unchanged -- but it
+// keeps `t_sprite` out of the vertex stage. With `layout: None` the bind group
+// layout is derived from the shader, and a texture that one stage only queries
+// with `textureDimensions` while the other samples it derives two different
+// sample types; wgpu-core (Firefox) rejects the merge ("Derived bind group
+// layout type is not consistent between stages") while Dawn (Chrome) accepts
+// it, which made both sprite pipelines invalid in Firefox.
+fn to_tile_texels(unit_vertex: vec2<f32>, tile: AtlasTile) -> vec2<f32> {
+  return vec2<f32>(tile.bounds.origin) + unit_vertex * vec2<f32>(tile.bounds.size);
+}
+
+fn tile_texels_to_uv(texels: vec2<f32>) -> vec2<f32> {
+  return texels / vec2<f32>(textureDimensions(t_sprite, 0));
 }
 
 fn distance_from_clip_rect_impl(position: vec2<f32>, clip_bounds: Bounds) -> vec4<f32> {
@@ -1164,7 +1176,7 @@ struct MonochromeSprite {
 
 struct MonoSpriteVarying {
     @builtin(position) position: vec4<f32>,
-    @location(0) tile_position: vec2<f32>,
+    @location(0) tile_texels: vec2<f32>,
     @location(1) @interpolate(flat) color: vec4<f32>,
     @location(3) clip_distances: vec4<f32>,
 }
@@ -1177,7 +1189,7 @@ fn vs_mono_sprite(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index
     var out = MonoSpriteVarying();
     out.position = to_device_position_transformed(unit_vertex, sprite.bounds, sprite.transformation);
 
-    out.tile_position = to_tile_position(unit_vertex, sprite.tile);
+    out.tile_texels = to_tile_texels(unit_vertex, sprite.tile);
     out.color = hsla_to_rgba(sprite.color);
     out.clip_distances = distance_from_clip_rect_transformed(unit_vertex, sprite.bounds, sprite.content_mask, sprite.transformation);
     return out;
@@ -1185,7 +1197,7 @@ fn vs_mono_sprite(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index
 
 @fragment
 fn fs_mono_sprite(input: MonoSpriteVarying) -> @location(0) vec4<f32> {
-    let sample = textureSample(t_sprite, s_sprite, input.tile_position).r;
+    let sample = textureSample(t_sprite, s_sprite, tile_texels_to_uv(input.tile_texels)).r;
     let alpha_corrected = apply_contrast_and_gamma_correction(sample, input.color.rgb, grayscale_enhanced_contrast.x, gamma_ratios);
 
     // Alpha clip after using the derivatives.
@@ -1213,7 +1225,7 @@ struct PolychromeSprite {
 
 struct PolySpriteVarying {
     @builtin(position) position: vec4<f32>,
-    @location(0) tile_position: vec2<f32>,
+    @location(0) tile_texels: vec2<f32>,
     @location(1) @interpolate(flat) sprite_id: u32,
     @location(3) clip_distances: vec4<f32>,
 }
@@ -1225,7 +1237,7 @@ fn vs_poly_sprite(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index
 
     var out = PolySpriteVarying();
     out.position = to_device_position(unit_vertex, sprite.bounds);
-    out.tile_position = to_tile_position(unit_vertex, sprite.tile);
+    out.tile_texels = to_tile_texels(unit_vertex, sprite.tile);
     out.sprite_id = instance_id;
     out.clip_distances = distance_from_clip_rect(unit_vertex, sprite.bounds, sprite.content_mask);
     return out;
@@ -1233,7 +1245,7 @@ fn vs_poly_sprite(@builtin(vertex_index) vertex_id: u32, @builtin(instance_index
 
 @fragment
 fn fs_poly_sprite(input: PolySpriteVarying) -> @location(0) vec4<f32> {
-    let sample = textureSample(t_sprite, s_sprite, input.tile_position);
+    let sample = textureSample(t_sprite, s_sprite, tile_texels_to_uv(input.tile_texels));
     // Alpha clip after using the derivatives.
     if (any(input.clip_distances < vec4<f32>(0.0))) {
         return vec4<f32>(0.0);
