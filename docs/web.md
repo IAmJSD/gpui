@@ -13,8 +13,11 @@ solid 60fps with no leaks or GPU errors. Pinch (the ctrl+wheel path),
 typing, dead keys, IME composition, external clipboard paste and
 multi-canvas windows have since had a Chrome 151 pass of their own, driven
 through the DevTools protocol against `examples/input_web.rs` and
-`examples/multi_window_web.rs`. Safari -- and with it the GestureEvent
-pinch path, which no other browser fires -- has still not been tried.
+`examples/multi_window_web.rs`. Safari 18.6 (macOS 15.6.1) was tried and
+cannot run gpui at all: it exposes no `navigator.gpu` unless WebGPU is
+switched on in the Develop menu's feature flags. The GestureEvent pinch
+path, which only Safari fires, therefore remains unexercised outside a
+synthetic test of its own arithmetic.
 
 Working:
 
@@ -85,7 +88,10 @@ Not yet implemented:
 
 ## Requirements
 
-- A browser with WebGPU (Chrome/Edge 113+, Safari 18+, Firefox 141+).
+- A browser with WebGPU (Chrome/Edge 113+, Firefox 141+, Safari 26+).
+  Safari 18 has WebGPU only behind Develop > Feature Flags > WebGPU; with
+  the flag off it does not define `navigator.gpu` at all, and gpui reports
+  `failed to request a WebGPU adapter` to the console and opens no window.
 - `rustup target add wasm32-unknown-unknown`
 - `cargo install wasm-bindgen-cli --version <version>` where `<version>`
   matches the `wasm-bindgen` entry in `Cargo.lock`.
