@@ -15,11 +15,13 @@ multi-canvas windows have since had a Chrome 151 pass of their own, driven
 through the DevTools protocol against `examples/input_web.rs` and
 `examples/multi_window_web.rs`. The ctrl+wheel pinch path was confirmed
 again with a physical trackpad pinch, which reaches the application and
-leaves the page's own zoom alone. Safari 18.6 (macOS 15.6.1) was tried and
-cannot run gpui at all: it exposes no `navigator.gpu` unless WebGPU is
-switched on in the Develop menu's feature flags. The GestureEvent pinch
-path, which only Safari fires, therefore remains unexercised outside a
-synthetic test of its own arithmetic.
+leaves the page's own zoom alone. Safari 18.6 (macOS 15.6.1) passes too, once
+WebGPU is switched on in its feature flags (see Requirements): clean boot,
+an Apple adapter, the same rendering, and typing, IME composition and
+ctrl+wheel all behaving as they do in Chrome. Its nonstandard
+GestureEvents -- the one pinch path no other browser fires, and one nothing
+can synthesize as trusted input -- were exercised with a physical trackpad
+gesture.
 
 Working:
 
@@ -49,7 +51,11 @@ Working:
   ctrl+wheel also zooms, which matches web convention -- the two are
   indistinguishable), and Safari's nonstandard GestureEvents. Sequences
   have no explicit end on the wheel path, so the gesture ends 150ms after
-  its last event.
+  its last event. GestureEvents report a cumulative `scale`, which is
+  divided back into the per-event deltas gpui wants; a real Safari gesture
+  reproduces its own final scale exactly. Such a gesture also reports
+  rotation, which gpui has no event for, so a twist with no pinch in it
+  still arrives as `Moved` events carrying a delta of 1.0.
 - Clipboard, in both directions with caveats: gpui's
   `read_from_clipboard` is synchronous while the browser clipboard is
   async and permission-gated, so reads are served from a mirror. Writes
