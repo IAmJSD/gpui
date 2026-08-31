@@ -23,6 +23,17 @@ GestureEvents -- the one pinch path no other browser fires, and one nothing
 can synthesize as trusted input -- were exercised with a physical trackpad
 gesture.
 
+Positioned popup windows, Option/AltGr characters and Tab capture have had
+a Chrome 151 pass too. The Option characters and Tab were driven as real
+macOS key events (Chrome in `--app` mode, so the omnibox cannot take the
+focus): option-a/q/l insert exactly one "å"/"œ"/"¬" apiece, ctrl-option-a
+stays a chord, and DOM focus stays on the hidden input across repeated
+Tabs with typing still live. AltGr was exercised against a spoofed Windows
+user agent, where ctrl+alt+2/e insert "²"/"€" and an untransformed
+ctrl+alt+a does not. The one input path still without empirical backing is
+a real OS input method (macOS Japanese/Chinese) typed physically; only
+CDP-synthesized composition stands behind it.
+
 Working:
 
 - The full gpui programming model: entities, layout (taffy), styling,
@@ -46,7 +57,10 @@ Working:
   as ctrl+alt) follow the macOS convention: the keystroke's `key` is the
   physical key so bindings like alt-a still match, and the transformed
   character rides in `key_char` and is inserted when gpui leaves the key
-  unbound (not yet browser-verified). Tab always has its browser default
+  unbound. Apple platforms are the exception to the ctrl+alt half: option
+  there transforms the character even with control held, but the mac
+  backend only fills `key_char` when control is up, so ctrl-option-a stays
+  a chord and types nothing. Tab always has its browser default
   suppressed -- it is a gpui navigation key, and the browser's response
   would move the DOM focus off the window's hidden input and take the
   keyboard with it.
@@ -86,8 +100,9 @@ Working:
   the first claims `<canvas id="gpui">` if the page provides one (and it
   is unclaimed), the rest get their own full-viewport canvases appended
   to `<body>`, stacked in creation order. `PopUp` and `Floating` windows
-  (not yet browser-verified) are instead positioned canvases at their
-  requested bounds, above every normal window, and honor `resize()`;
+  are instead positioned canvases at their requested bounds, above every
+  normal window, and honor `resize()`; their mouse coordinates are
+  window-relative, since `offsetX`/`offsetY` are measured from the canvas;
   closing any window removes its elements from the DOM. Device-pixel-ratio changes and canvas resizes are
   picked up every frame. Each window also owns the hidden `<input>` that
   its keyboard, composition and paste listeners hang off, so the window

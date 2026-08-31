@@ -9,9 +9,9 @@
 //! `docs/web.md` for how to build and serve it.
 
 use gpui::{
-    App, Application, Bounds, Context, FocusHandle, Focusable, KeyDownEvent, MouseButton, Rgba,
-    SharedString, Window, WindowBounds, WindowKind, WindowOptions, div, point, prelude::*, px, rgb,
-    size,
+    App, Application, Bounds, Context, FocusHandle, Focusable, KeyDownEvent, MouseButton,
+    MouseDownEvent, Rgba, SharedString, Window, WindowBounds, WindowKind, WindowOptions, div,
+    point, prelude::*, px, rgb, size,
 };
 
 struct WindowContents {
@@ -31,15 +31,37 @@ impl Focusable for WindowContents {
 impl Render for WindowContents {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let label = self.label.clone();
+        let position_label = self.label.clone();
         div()
             .track_focus(&self.focus_handle(cx))
-            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
-                // Each window logs the keys it sees, so a key delivered to
-                // more than one window is obvious.
-                log::info!("{label}: key {}", event.keystroke.unparse());
-                this.keys += 1;
-                cx.notify();
-            }))
+            // Logs where in *this window* the press landed, so a positioned
+            // window's mouse coordinates can be checked against its own origin.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |_, event: &MouseDownEvent, _, _| {
+                    log::info!(
+                        "{position_label}: mouse down at {:?}",
+                        event.position
+                    );
+                }),
+            )
+            .on_key_down(cx.listener(
+                move |this, event: &KeyDownEvent, window: &mut Window, cx| {
+                    // Each window logs the keys it sees, so a key delivered to
+                    // more than one window is obvious.
+                    log::info!("{label}: key {}", event.keystroke.unparse());
+                    // Escape closes the window, so that closing can be driven
+                    // from the keyboard (on the web, this should take the
+                    // window's canvas and hidden input out of the DOM).
+                    if event.keystroke.key == "escape" {
+                        log::info!("{label}: closing");
+                        window.remove_window();
+                        return;
+                    }
+                    this.keys += 1;
+                    cx.notify();
+                },
+            ))
             .flex()
             .flex_col()
             .gap_4()
@@ -84,7 +106,9 @@ fn main() {
         #[cfg(target_arch = "wasm32")]
         cx.text_system()
             .add_fonts(vec![
-                include_bytes!("fonts/IBMPlexSans-Regular.ttf").as_slice().into(),
+                include_bytes!("fonts/IBMPlexSans-Regular.ttf")
+                    .as_slice()
+                    .into(),
             ])
             .unwrap();
 

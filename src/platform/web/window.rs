@@ -670,7 +670,13 @@ fn keystroke_for(event: &KeyboardEvent) -> Keystroke {
                 return Keystroke {
                     modifiers,
                     key: unmodified,
-                    key_char: Some(dom_key),
+                    // Apple layouts transform the character even with control
+                    // held (ctrl-option-a is still "å"), but the mac backend
+                    // only fills key_char when control is up, so such a chord
+                    // types nothing. Elsewhere ctrl+alt *is* AltGr, and its
+                    // character is exactly what the user meant to type.
+                    key_char: (!modifiers.control || !is_apple_platform())
+                        .then_some(dom_key),
                 };
             }
         }
@@ -684,6 +690,19 @@ fn keystroke_for(event: &KeyboardEvent) -> Keystroke {
     // Derives key_char ("a" -> "a", shift-a -> "A", enter -> "\n"; nothing
     // for ctrl/cmd chords) the same way simulated keystrokes do.
     .with_simulated_ime()
+}
+
+/// Whether the browser runs on an Apple platform, whose option key transforms
+/// characters regardless of control (see `keystroke_for`).
+fn is_apple_platform() -> bool {
+    thread_local! {
+        static IS_APPLE: bool = web_sys::window()
+            .and_then(|window| window.navigator().user_agent().ok())
+            .is_some_and(|agent| {
+                agent.contains("Mac") || agent.contains("iPhone") || agent.contains("iPad")
+            });
+    }
+    IS_APPLE.with(|is_apple| *is_apple)
 }
 
 /// The key an unmodified press of this physical key would produce, for the
