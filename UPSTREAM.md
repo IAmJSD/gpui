@@ -102,6 +102,63 @@ time.
   pads unconditionally and a `new_id` with no registered child handler
   panics the queue.
 
+- **A web platform backend** (`platform/web`, target
+  `wasm32-unknown-unknown`), documented in `docs/web.md`. The JS event loop
+  is the platform event loop: the dispatcher schedules runnables as
+  microtasks and `setTimeout`s, a window is an `HtmlCanvasElement` driven by
+  `requestAnimationFrame`, and rendering is a port of the blade renderer to
+  wgpu/WebGPU (`platform/web/renderer.rs` -- WebGL2 was not an option, the
+  shaders' storage-buffer instancing needs WebGPU). The WGSL is shared with
+  blade except for explicit `@group`/`@binding` decorations, which blade
+  injects but raw wgpu requires. `Platform::run` cannot block in a browser;
+  it performs the async WebGPU setup, then calls the launch callback, and
+  the app lives on in its registered callbacks. `Instant` is `web-time`'s
+  re-export crate-wide (std's panics on wasm; on native it is the same
+  type).
+
+  Text runs on the same cosmic-text stack as Linux --
+  `platform/linux/text_system.rs` moved to `platform/cosmic_text_system.rs`,
+  shared by both -- with one wasm divergence: font-kit does not compile
+  there, so the final style/weight/stretch candidate selection has a local
+  CSS-matching approximation behind `cfg(target_arch = "wasm32")`. The
+  browser has no system fonts; applications add fonts at startup
+  (`hello_web` embeds IBM Plex Sans, which is what the default
+  `.SystemUIFont` resolves to). DOM pointer/keyboard/wheel events are
+  translated to `PlatformInput` (including pen pressure and manual
+  multi-click counting), pinch gestures arrive via the ctrl+wheel events
+  browsers synthesize (plus Safari's GestureEvents), dark mode tracks
+  `prefers-color-scheme`, and cursor styles map to CSS cursors. The
+  clipboard is a mirror (reads are synchronous in gpui; the browser's is
+  async and permission-gated) with one enhancement: paste keystrokes are
+  briefly held for the browser's `paste` event, the only place external
+  clipboard text is synchronously readable, so pasting from other
+  applications works. IME composition goes through an invisible focused
+  `<input>` that receives the composition events and follows the caret.
+  Popup and floating windows are positioned canvases at their requested
+  bounds; normal windows fill the viewport. CI
+  (`.github/workflows/ci.yml`) runs the full gate -- native check and
+  tests, wasm32, the web examples, and the Windows cross-check.
+
+  Enabling the target took some dependency surgery: `gpui_util` and
+  `gpui_http_client` are vendored under `vendor/` with their desktop-only
+  modules cfg'd off for wasm (see `vendor/README.md`); `smol` is a non-wasm
+  dependency (the executor uses `futures-lite`'s prelude, which is what
+  `smol::prelude` re-exports anyway); `uuid` gets randomness from the
+  browser via getrandom's `wasm_js` backend (`.cargo/config.toml`). The
+  `test-support` feature is not available on wasm, and
+  `BackgroundExecutor::block` panics there (no second thread to make
+  progress while parked).
+
+  Smoke-tested in Chrome 151 and Firefox 148 on macOS/Apple M4:
+  rendering, text, mouse input, resize, dark mode, and a 3-minute 60fps
+  soak with zero console/GPU errors (the run surfaced and fixed three
+  real bugs: an application-lifetime bug in the non-blocking `run`, a
+  cross-stage bind-group derivation conflict wgpu-core rejects but Dawn
+  accepts, and a cursor gated on focus instead of hover). Safari, and
+  the additions that came after that pass -- pinch, external paste, IME
+  composition -- have not run in a browser yet. macOS *build hosts* need
+  llvm-ar for the wasm target; see docs/web.md.
+
 - **Images on the Linux clipboards.** Both Linux backends wrote
   `item.text().unwrap_or_default()` and nothing else, so copying a
   `ClipboardItem::new_image` -- a region of a picture -- put an empty string

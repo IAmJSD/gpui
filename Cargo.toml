@@ -133,6 +133,10 @@ name = "hello_world"
 path = "examples/hello_world.rs"
 
 [[example]]
+name = "hello_web"
+path = "examples/hello_web.rs"
+
+[[example]]
 name = "image"
 path = "examples/image/image.rs"
 
@@ -147,6 +151,14 @@ path = "examples/image_loading.rs"
 [[example]]
 name = "input"
 path = "examples/input.rs"
+
+[[example]]
+name = "input_web"
+path = "examples/input_web.rs"
+
+[[example]]
+name = "multi_window_web"
+path = "examples/multi_window_web.rs"
 
 [[example]]
 name = "on_window_close_quit"
@@ -275,6 +287,9 @@ version = "0.2"
 [dependencies.futures]
 version = "0.3"
 
+[dependencies.futures-lite]
+version = "2.0"
+
 [dependencies.gpui_macros]
 version = "0.2.2"
 package = "gpui-macros"
@@ -376,9 +391,6 @@ version = "1.0.6"
 version = "1.6"
 features = ["union"]
 
-[dependencies.smol]
-version = "2.0"
-
 [dependencies.stacksafe]
 version = "0.1"
 
@@ -420,8 +432,19 @@ features = [
 [dependencies.waker-fn]
 version = "1.2.0"
 
+# Drop-in std::time re-export on native; performance.now()-backed Instant on
+# wasm32, where std::time::Instant::now() panics.
+[dependencies.web-time]
+version = "1.1"
+
 [dev-dependencies.backtrace]
 version = "0.3"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies.console_error_panic_hook]
+version = "0.1"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies.console_log]
+version = "1.0"
 
 [dev-dependencies.collections]
 version = "0.2.2"
@@ -454,6 +477,84 @@ version = "1.10"
 version = "0.2.2"
 features = ["test-support"]
 package = "gpui_util"
+
+# smol's IO/timer reactors need OS facilities that don't exist on the web;
+# wasm builds route async work through the platform dispatcher instead.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies.smol]
+version = "2.0"
+
+# uuid v4/v7 need a randomness source on the web; this routes getrandom to the
+# browser's crypto API (together with `getrandom_backend = "wasm_js"` in
+# .cargo/config.toml).
+[target.'cfg(target_arch = "wasm32")'.dependencies.uuid]
+version = "1.1.2"
+features = ["js"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.getrandom]
+version = "0.3"
+features = ["wasm_js"]
+
+# Same text stack as Linux, minus fontconfig (no system fonts to discover in
+# a browser; fonts are added via `TextSystem::add_fonts`).
+[target.'cfg(target_arch = "wasm32")'.dependencies.cosmic-text]
+version = "0.14.0"
+default-features = false
+features = [
+    "std",
+    "swash",
+    "wasm-web",
+]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.wasm-bindgen]
+version = "0.2"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.wasm-bindgen-futures]
+version = "0.4"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.js-sys]
+version = "0.3"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.web-sys]
+version = "0.3"
+features = [
+    "console",
+    "AddEventListenerOptions",
+    "Clipboard",
+    "ClipboardEvent",
+    "CompositionEvent",
+    "CssStyleDeclaration",
+    "DataTransfer",
+    "Document",
+    "DomRect",
+    "Element",
+    "Event",
+    "EventTarget",
+    "HtmlCanvasElement",
+    "HtmlElement",
+    "HtmlInputElement",
+    "KeyboardEvent",
+    "MediaQueryList",
+    "MediaQueryListEvent",
+    "MouseEvent",
+    "Navigator",
+    "Performance",
+    "PointerEvent",
+    "WheelEvent",
+    "Window",
+]
+
+# The web renderer targets WebGPU. fragile-send-sync-non-atomic-wasm makes
+# wgpu's JS-backed handles Send + Sync on single-threaded wasm, which the
+# PlatformAtlas trait requires; it would be unsound only with wasm threads,
+# which gpui does not use.
+[target.'cfg(target_arch = "wasm32")'.dependencies.wgpu]
+version = "30"
+default-features = false
+features = [
+    "webgpu",
+    "wgsl",
+    "fragile-send-sync-non-atomic-wasm",
+]
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.as-raw-xcb-connection]
 version = "1"
@@ -585,7 +686,7 @@ optional = true
 version = "25.0"
 features = ["wgsl-in"]
 
-[target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))'.dependencies.pathfinder_geometry]
+[target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos", target_arch = "wasm32"))'.dependencies.pathfinder_geometry]
 version = "0.5"
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "windows"))'.dependencies.scap]
@@ -755,3 +856,10 @@ priority = -1
 [lints.rust.unexpected_cfgs]
 level = "allow"
 priority = 0
+
+# Local copies of the published crates with their desktop-only modules and
+# dependencies cfg'd off for wasm32; byte-identical to the registry sources
+# otherwise. See vendor/README.md.
+[patch.crates-io]
+gpui_util = { path = "vendor/util" }
+gpui_http_client = { path = "vendor/http_client" }

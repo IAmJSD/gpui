@@ -73,6 +73,19 @@ In addition to the systems above, GPUI provides a range of smaller services that
 Currently, the best way to learn about these APIs is to read the Zed source code, ask us about it at a fireside hack, or drop a question in the [Zed Discord](https://zed.dev/community-links). We're working on improving the documentation, creating more examples, and will be publishing more guides to GPUI on our [blog](https://zed.dev/blog).
 
 
+## Running in the browser
+
+This fork compiles to `wasm32-unknown-unknown` and runs gpui applications in
+the browser: windows are canvases rendered through WebGPU, text is shaped by
+the same cosmic-text stack as Linux (bring your own fonts -- browsers expose
+none), and DOM events become gpui input, including pinch gestures, IME
+composition and clipboard paste. Applications keep the normal gpui
+programming model; the platform differences that leak through (a
+non-blocking `Application::run`, no `BackgroundExecutor::block`) are small
+and documented. See [docs/web.md](docs/web.md) for the status table, build
+steps, and three browser examples (`hello_web`, `input_web`,
+`multi_window_web`).
+
 ## Pinch gestures
 
 This fork adds a `PinchEvent` alongside `ScrollWheelEvent`, so trackpad

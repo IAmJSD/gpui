@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
     rc::{Rc, Weak},
     sync::{Arc, atomic::Ordering::SeqCst},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use anyhow::{Context as _, Result, anyhow};
@@ -20,6 +20,7 @@ use futures::{
 use itertools::Itertools;
 use parking_lot::RwLock;
 use slotmap::SlotMap;
+use web_time::Instant;
 
 pub use async_context::*;
 use collections::{FxHashMap, FxHashSet, HashMap, VecDeque};
@@ -181,6 +182,16 @@ impl Application {
             let cx = &mut *this.borrow_mut();
             on_finish_launching(cx);
         }));
+        // On the web `Platform::run` returns as soon as the launch callback has
+        // been scheduled instead of blocking in an event loop, and everything
+        // the browser backend registers afterwards (the requestAnimationFrame
+        // loop, the DOM event listeners) holds only `Weak` references. Without
+        // this the last strong reference to the app would be dropped together
+        // with the launch callback, tearing every window down before the first
+        // frame. The application owns the page for as long as it is open, so
+        // the root reference is deliberately leaked.
+        #[cfg(target_arch = "wasm32")]
+        std::mem::forget(self);
     }
 
     /// Register a handler to be invoked when the platform instructs the application

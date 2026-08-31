@@ -112,7 +112,7 @@ impl<T: Future> Future for WithTimeout<T> {
     }
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
 /// Uses smol executor to run a given future no longer than the timeout specified.
 /// Note that this won't "rewind" on `cx.executor().advance_clock` call, truly waiting for the timeout to elapse.
 pub async fn smol_timeout<F, T>(timeout: Duration, f: F) -> Result<T, ()>

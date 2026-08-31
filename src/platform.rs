@@ -17,8 +17,22 @@ mod mac;
 ))]
 mod blade;
 
+// The cosmic-text text system is pure Rust and shared by the Linux backends
+// and the web backend.
+#[cfg(any(
+    all(
+        any(target_os = "linux", target_os = "freebsd"),
+        any(feature = "x11", feature = "wayland")
+    ),
+    target_arch = "wasm32"
+))]
+mod cosmic_text_system;
+
 #[cfg(any(test, feature = "test-support"))]
 mod test;
+
+#[cfg(target_arch = "wasm32")]
+mod web;
 
 #[cfg(target_os = "windows")]
 mod windows;
@@ -57,7 +71,7 @@ use std::borrow::Cow;
 use std::hash::{Hash, Hasher};
 use std::io::Cursor;
 use std::ops;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use std::{
     fmt::{self, Debug},
     ops::Range,
@@ -67,11 +81,20 @@ use std::{
 };
 use strum::EnumIter;
 use uuid::Uuid;
+use web_time::Instant;
 
 pub use app_menu::*;
 pub use keyboard::*;
 pub use keystroke::*;
 
+#[cfg(any(
+    all(
+        any(target_os = "linux", target_os = "freebsd"),
+        any(feature = "x11", feature = "wayland")
+    ),
+    target_arch = "wasm32"
+))]
+pub(crate) use cosmic_text_system::*;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 pub(crate) use linux::*;
 #[cfg(target_os = "macos")]
@@ -79,6 +102,8 @@ pub(crate) use mac::*;
 pub use semantic_version::SemanticVersion;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use test::*;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use web::*;
 #[cfg(target_os = "windows")]
 pub(crate) use windows::*;
 
@@ -158,6 +183,11 @@ pub(crate) fn current_platform(_headless: bool) -> Rc<dyn Platform> {
             .inspect_err(|err| show_error("Failed to launch", err.to_string()))
             .unwrap(),
     )
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn current_platform(_headless: bool) -> Rc<dyn Platform> {
+    Rc::new(WebPlatform::new())
 }
 
 pub(crate) trait Platform: 'static {
@@ -720,9 +750,12 @@ pub(crate) enum AtlasKey {
 
 impl AtlasKey {
     #[cfg_attr(
-        all(
-            any(target_os = "linux", target_os = "freebsd"),
-            not(any(feature = "x11", feature = "wayland"))
+        any(
+            all(
+                any(target_os = "linux", target_os = "freebsd"),
+                not(any(feature = "x11", feature = "wayland"))
+            ),
+            target_arch = "wasm32"
         ),
         allow(dead_code)
     )]
@@ -823,9 +856,12 @@ pub(crate) struct AtlasTextureId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(C)]
 #[cfg_attr(
-    all(
-        any(target_os = "linux", target_os = "freebsd"),
-        not(any(feature = "x11", feature = "wayland"))
+    any(
+        all(
+            any(target_os = "linux", target_os = "freebsd"),
+            not(any(feature = "x11", feature = "wayland"))
+        ),
+        target_arch = "wasm32"
     ),
     allow(dead_code)
 )]
@@ -856,9 +892,12 @@ pub(crate) struct PlatformInputHandler {
 }
 
 #[cfg_attr(
-    all(
-        any(target_os = "linux", target_os = "freebsd"),
-        not(any(feature = "x11", feature = "wayland"))
+    any(
+        all(
+            any(target_os = "linux", target_os = "freebsd"),
+            not(any(feature = "x11", feature = "wayland"))
+        ),
+        target_arch = "wasm32"
     ),
     allow(dead_code)
 )]
@@ -1137,9 +1176,12 @@ pub struct WindowOptions {
 /// The variables that can be configured when creating a new window
 #[derive(Debug)]
 #[cfg_attr(
-    all(
-        any(target_os = "linux", target_os = "freebsd"),
-        not(any(feature = "x11", feature = "wayland"))
+    any(
+        all(
+            any(target_os = "linux", target_os = "freebsd"),
+            not(any(feature = "x11", feature = "wayland"))
+        ),
+        target_arch = "wasm32"
     ),
     allow(dead_code)
 )]
@@ -1844,7 +1886,10 @@ impl ClipboardString {
             .and_then(|m| serde_json::from_str(m).ok())
     }
 
-    #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(dead_code))]
+    #[cfg_attr(
+        any(target_os = "linux", target_os = "freebsd", target_arch = "wasm32"),
+        allow(dead_code)
+    )]
     pub(crate) fn text_hash(text: &str) -> u64 {
         let mut hasher = SeaHasher::new();
         text.hash(&mut hasher);
