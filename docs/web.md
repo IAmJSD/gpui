@@ -139,7 +139,9 @@ python3 -m http.server -d examples/web 8000
 Two more examples cover the input paths that need a browser to exercise.
 `input_web` is a text editor with a keystroke log, the clipboard mirror's
 contents and a pinch readout -- the place to try typing, dead keys, an IME,
-ctrl/cmd-v and a trackpad pinch. `multi_window_web` opens two windows to
+ctrl/cmd-v and a trackpad pinch. It embeds M PLUS 1p as well as IBM Plex
+Sans, since a browser has no system font to fall back to and everything an
+input method commits would otherwise be tofu. `multi_window_web` opens two windows to
 show that each gets its own canvas. Each has its own page next to
 `index.html`:
 

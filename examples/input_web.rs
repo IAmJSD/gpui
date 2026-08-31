@@ -8,9 +8,8 @@
 //! adds is the surrounding instrumentation -- a keystroke log, the clipboard
 //! mirror's current contents, a pinch readout with a square that scales with
 //! the gesture -- plus the embedded font the browser cannot supply
-//! (`examples/fonts/`, SIL OFL 1.1). That font is Latin-only, so text
-//! composed with a CJK input method commits correctly but draws as tofu --
-//! add a CJK font here to read it.
+//! (`examples/fonts/`, SIL OFL 1.1) alongside M PLUS 1p, which covers the
+//! kana and kanji a Japanese input method commits.
 //!
 //! It also runs natively, which is handy for telling a backend bug apart from
 //! a bug in the example.
@@ -730,6 +729,12 @@ fn main() {
         cx.text_system()
             .add_fonts(vec![
                 include_bytes!("fonts/IBMPlexSans-Regular.ttf").as_slice().into(),
+                // IBM Plex Sans is Latin-only, and a browser offers nothing to
+                // fall back to, so without a second font every CJK character
+                // an input method commits comes out as tofu -- which makes the
+                // IME half of this example unreadable. M PLUS 1p covers kana
+                // and kanji (examples/fonts/, SIL OFL 1.1).
+                include_bytes!("fonts/MPLUS1p-Regular.ttf").as_slice().into(),
             ])
             .unwrap();
 
