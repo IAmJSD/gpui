@@ -275,6 +275,9 @@ version = "0.2"
 [dependencies.futures]
 version = "0.3"
 
+[dependencies.futures-lite]
+version = "2.0"
+
 [dependencies.gpui_macros]
 version = "0.2.2"
 package = "gpui-macros"
@@ -376,9 +379,6 @@ version = "1.0.6"
 version = "1.6"
 features = ["union"]
 
-[dependencies.smol]
-version = "2.0"
-
 [dependencies.stacksafe]
 version = "0.1"
 
@@ -454,6 +454,22 @@ version = "1.10"
 version = "0.2.2"
 features = ["test-support"]
 package = "gpui_util"
+
+# smol's IO/timer reactors need OS facilities that don't exist on the web;
+# wasm builds route async work through the platform dispatcher instead.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies.smol]
+version = "2.0"
+
+# uuid v4/v7 need a randomness source on the web; this routes getrandom to the
+# browser's crypto API (together with `getrandom_backend = "wasm_js"` in
+# .cargo/config.toml).
+[target.'cfg(target_arch = "wasm32")'.dependencies.uuid]
+version = "1.1.2"
+features = ["js"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.getrandom]
+version = "0.3"
+features = ["wasm_js"]
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.as-raw-xcb-connection]
 version = "1"
@@ -755,3 +771,10 @@ priority = -1
 [lints.rust.unexpected_cfgs]
 level = "allow"
 priority = 0
+
+# Local copies of the published crates with their desktop-only modules and
+# dependencies cfg'd off for wasm32; byte-identical to the registry sources
+# otherwise. See vendor/README.md.
+[patch.crates-io]
+gpui_util = { path = "vendor/util" }
+gpui_http_client = { path = "vendor/http_client" }

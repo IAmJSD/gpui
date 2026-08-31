@@ -102,6 +102,19 @@ time.
   pads unconditionally and a `new_id` with no registered child handler
   panics the queue.
 
+- **`wasm32-unknown-unknown` compiles** (stage 1 of web support: compile
+  only). `cargo check --target wasm32-unknown-unknown` passes with default
+  features. A stub backend in `platform/web` satisfies the `Platform` trait --
+  it cannot open windows or dispatch tasks yet, it exists so the
+  target-selection cfgs in `platform.rs` have a fourth arm. `gpui_util` and
+  `gpui_http_client` are vendored under `vendor/` with their desktop-only
+  modules cfg'd off for wasm (see `vendor/README.md`); `smol` is a
+  non-wasm dependency now (the executor uses `futures-lite`'s prelude, which
+  is what `smol::prelude` re-exports anyway), and `uuid` gets its randomness
+  from the browser via getrandom's `wasm_js` backend (`.cargo/config.toml`).
+  The `test-support` feature is not available on wasm. Windowing, input, a
+  dispatcher on the JS event loop, and a renderer are later stages.
+
 - **Images on the Linux clipboards.** Both Linux backends wrote
   `item.text().unwrap_or_default()` and nothing else, so copying a
   `ClipboardItem::new_image` -- a region of a picture -- put an empty string

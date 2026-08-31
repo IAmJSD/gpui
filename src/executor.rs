@@ -1,7 +1,7 @@
 use crate::{App, PlatformDispatcher};
 use async_task::Runnable;
 use futures::channel::mpsc;
-use smol::prelude::*;
+use futures_lite::prelude::*;
 use std::mem::ManuallyDrop;
 use std::panic::Location;
 use std::thread::{self, ThreadId};
