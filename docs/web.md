@@ -13,7 +13,9 @@ solid 60fps with no leaks or GPU errors. Pinch (the ctrl+wheel path),
 typing, dead keys, IME composition, external clipboard paste and
 multi-canvas windows have since had a Chrome 151 pass of their own, driven
 through the DevTools protocol against `examples/input_web.rs` and
-`examples/multi_window_web.rs`. Safari 18.6 (macOS 15.6.1) was tried and
+`examples/multi_window_web.rs`. The ctrl+wheel pinch path was confirmed
+again with a physical trackpad pinch, which reaches the application and
+leaves the page's own zoom alone. Safari 18.6 (macOS 15.6.1) was tried and
 cannot run gpui at all: it exposes no `navigator.gpu` unless WebGPU is
 switched on in the Develop menu's feature flags. The GestureEvent pinch
 path, which only Safari fires, therefore remains unexercised outside a
