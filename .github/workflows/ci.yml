@@ -15,7 +15,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install system libraries
         run: |
@@ -30,6 +30,9 @@ jobs:
           targets: wasm32-unknown-unknown, x86_64-pc-windows-gnu
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --check
 
       - name: Native check
         run: cargo check

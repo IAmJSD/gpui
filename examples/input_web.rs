@@ -243,7 +243,6 @@ impl TextInput {
             .find_map(|(idx, _)| (idx > offset).then_some(idx))
             .unwrap_or(self.content.len())
     }
-
 }
 
 impl EntityInputHandler for TextInput {
@@ -702,16 +701,22 @@ impl Render for InputLab {
                     ),
             )
             .child(div().child("recent keystrokes:"))
-            .children(self.recent_keystrokes.iter().rev().take(8).map(|keystroke| {
-                div().child(format!(
-                    "{} {}",
-                    keystroke.unparse(),
-                    match keystroke.key_char.as_ref() {
-                        Some(key_char) => format!("-> {key_char:?}"),
-                        None => String::new(),
-                    }
-                ))
-            }))
+            .children(
+                self.recent_keystrokes
+                    .iter()
+                    .rev()
+                    .take(8)
+                    .map(|keystroke| {
+                        div().child(format!(
+                            "{} {}",
+                            keystroke.unparse(),
+                            match keystroke.key_char.as_ref() {
+                                Some(key_char) => format!("-> {key_char:?}"),
+                                None => String::new(),
+                            }
+                        ))
+                    }),
+            )
     }
 }
 
@@ -728,13 +733,17 @@ fn main() {
         #[cfg(target_arch = "wasm32")]
         cx.text_system()
             .add_fonts(vec![
-                include_bytes!("fonts/IBMPlexSans-Regular.ttf").as_slice().into(),
+                include_bytes!("fonts/IBMPlexSans-Regular.ttf")
+                    .as_slice()
+                    .into(),
                 // IBM Plex Sans is Latin-only, and a browser offers nothing to
                 // fall back to, so without a second font every CJK character
                 // an input method commits comes out as tofu -- which makes the
                 // IME half of this example unreadable. M PLUS 1p covers kana
                 // and kanji (examples/fonts/, SIL OFL 1.1).
-                include_bytes!("fonts/MPLUS1p-Regular.ttf").as_slice().into(),
+                include_bytes!("fonts/MPLUS1p-Regular.ttf")
+                    .as_slice()
+                    .into(),
             ])
             .unwrap();
 

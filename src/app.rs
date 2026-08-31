@@ -12,7 +12,6 @@ use std::{
 
 use anyhow::{Context as _, Result, anyhow};
 use derive_more::{Deref, DerefMut};
-use web_time::Instant;
 use futures::{
     Future, FutureExt,
     channel::oneshot,
@@ -21,6 +20,7 @@ use futures::{
 use itertools::Itertools;
 use parking_lot::RwLock;
 use slotmap::SlotMap;
+use web_time::Instant;
 
 pub use async_context::*;
 use collections::{FxHashMap, FxHashSet, HashMap, VecDeque};

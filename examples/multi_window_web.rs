@@ -39,14 +39,11 @@ impl Render for WindowContents {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |_, event: &MouseDownEvent, _, _| {
-                    log::info!(
-                        "{position_label}: mouse down at {:?}",
-                        event.position
-                    );
+                    log::info!("{position_label}: mouse down at {:?}", event.position);
                 }),
             )
-            .on_key_down(cx.listener(
-                move |this, event: &KeyDownEvent, window: &mut Window, cx| {
+            .on_key_down(
+                cx.listener(move |this, event: &KeyDownEvent, window: &mut Window, cx| {
                     // Each window logs the keys it sees, so a key delivered to
                     // more than one window is obvious.
                     log::info!("{label}: key {}", event.keystroke.unparse());
@@ -60,8 +57,8 @@ impl Render for WindowContents {
                     }
                     this.keys += 1;
                     cx.notify();
-                },
-            ))
+                }),
+            )
             .flex()
             .flex_col()
             .gap_4()

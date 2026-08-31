@@ -538,7 +538,10 @@ impl From<FontStyle> for cosmic_text::Style {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn find_best_match(candidates: &[font_kit::properties::Properties], font: &crate::Font) -> Option<usize> {
+fn find_best_match(
+    candidates: &[font_kit::properties::Properties],
+    font: &crate::Font,
+) -> Option<usize> {
     font_kit::matching::find_best_match(candidates, &font_into_properties(font)).ok()
 }
 

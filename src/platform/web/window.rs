@@ -421,11 +421,23 @@ impl WebWindowInner {
     /// Moves the hidden input to `origin` (window coordinates, which are the
     /// viewport's because the canvas fills it).
     fn place_ime_input(&self, origin: Point<Pixels>) {
+        // `origin` is window-relative; the hidden input is position:fixed in
+        // page coordinates, so a positioned (popup/floating) window's own
+        // origin has to be added. A full-viewport canvas sits at 0,0 and the
+        // rect lookup is skipped.
+        let (offset_x, offset_y) = if self.fills_viewport {
+            (0.0, 0.0)
+        } else {
+            let rect = self.canvas.get_bounding_client_rect();
+            (rect.left() as f32, rect.top() as f32)
+        };
         let style = self.ime_input.style();
         style
-            .set_property("left", &format!("{}px", origin.x.0))
+            .set_property("left", &format!("{}px", origin.x.0 + offset_x))
             .ok();
-        style.set_property("top", &format!("{}px", origin.y.0)).ok();
+        style
+            .set_property("top", &format!("{}px", origin.y.0 + offset_y))
+            .ok();
     }
 
     /// Parks the hidden input at the caret so the browser draws the IME
@@ -675,8 +687,7 @@ fn keystroke_for(event: &KeyboardEvent) -> Keystroke {
                     // only fills key_char when control is up, so such a chord
                     // types nothing. Elsewhere ctrl+alt *is* AltGr, and its
                     // character is exactly what the user meant to type.
-                    key_char: (!modifiers.control || !is_apple_platform())
-                        .then_some(dom_key),
+                    key_char: (!modifiers.control || !is_apple_platform()).then_some(dom_key),
                 };
             }
         }
@@ -1085,13 +1096,19 @@ fn setup_event_listeners(inner: &Rc<WebWindowInner>) {
         inner.place_ime_input_at_caret();
     });
 
-    add_listener::<CompositionEvent>(inner, ime_target, "compositionupdate", None, |inner, event| {
-        let text = event.data().unwrap_or_default();
-        inner.with_input_handler(|handler| {
-            handler.replace_and_mark_text_in_range(None, &text, None);
-        });
-        inner.place_ime_input_at_caret();
-    });
+    add_listener::<CompositionEvent>(
+        inner,
+        ime_target,
+        "compositionupdate",
+        None,
+        |inner, event| {
+            let text = event.data().unwrap_or_default();
+            inner.with_input_handler(|handler| {
+                handler.replace_and_mark_text_in_range(None, &text, None);
+            });
+            inner.place_ime_input_at_caret();
+        },
+    );
 
     add_listener::<CompositionEvent>(inner, ime_target, "compositionend", None, |inner, event| {
         inner.composing.set(false);

@@ -121,7 +121,9 @@ impl Pipelines {
         // everything else (Opaque here plays blade's `Ignored`) gets straight
         // alpha blending.
         let blend_mode = match alpha_mode {
-            wgpu::CompositeAlphaMode::PreMultiplied => wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+            wgpu::CompositeAlphaMode::PreMultiplied => {
+                wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING
+            }
             _ => wgpu::BlendState::ALPHA_BLENDING,
         };
 
@@ -419,9 +421,9 @@ impl WebGpuRenderer {
         let gamma_ratios = get_gamma_ratios(1.8);
         let grayscale_enhanced_contrast = [1.0f32, 0.0, 0.0, 0.0];
         // SAFETY: `[f32; 4]` is plain data with no padding.
-        context.queue.write_buffer(&gamma_ratios_buffer, 0, unsafe {
-            as_bytes(&gamma_ratios)
-        });
+        context
+            .queue
+            .write_buffer(&gamma_ratios_buffer, 0, unsafe { as_bytes(&gamma_ratios) });
         context
             .queue
             .write_buffer(&grayscale_enhanced_contrast_buffer, 0, unsafe {
@@ -833,12 +835,12 @@ impl WebGpuRenderer {
             return;
         }
         // SAFETY: `PathRasterizationVertex` is repr(C), mirrored by the shader.
-        let (offset, size) = self.instances.path_vertices.upload(
-            device,
-            queue,
-            self.storage_alignment,
-            unsafe { as_bytes(&vertices) },
-        );
+        let (offset, size) =
+            self.instances
+                .path_vertices
+                .upload(device, queue, self.storage_alignment, unsafe {
+                    as_bytes(&vertices)
+                });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("path rasterization"),
             layout: &self.pipelines.path_rasterization.bind_group_layout,

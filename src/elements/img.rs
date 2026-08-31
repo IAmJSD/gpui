@@ -23,8 +23,8 @@ use std::{
     time::Duration,
 };
 use thiserror::Error;
-use web_time::Instant;
 use util::ResultExt;
+use web_time::Instant;
 
 use super::{Stateful, StatefulInteractiveElement};
 

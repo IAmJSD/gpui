@@ -50,9 +50,9 @@ use std::{
     time::Duration,
 };
 use util::post_inc;
-use web_time::Instant;
 use util::{ResultExt, measure};
 use uuid::Uuid;
+use web_time::Instant;
 
 mod prompts;
 

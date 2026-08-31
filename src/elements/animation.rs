@@ -1,7 +1,4 @@
-use std::{
-    rc::Rc,
-    time::Duration,
-};
+use std::{rc::Rc, time::Duration};
 
 use web_time::Instant;
 

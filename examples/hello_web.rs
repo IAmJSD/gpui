@@ -72,11 +72,15 @@ impl Render for HelloWeb {
                             .rounded_full()
                             .bg(rgb(0x4c566a))
                             .child(
-                                div().h_full().rounded_full().bg(rgb(0x88c0d0)).with_animation(
-                                    "progress",
-                                    Animation::new(Duration::from_secs(2)).repeat(),
-                                    |this, delta| this.w(px(224.0 * delta)),
-                                ),
+                                div()
+                                    .h_full()
+                                    .rounded_full()
+                                    .bg(rgb(0x88c0d0))
+                                    .with_animation(
+                                        "progress",
+                                        Animation::new(Duration::from_secs(2)).repeat(),
+                                        |this, delta| this.w(px(224.0 * delta)),
+                                    ),
                             ),
                     ),
             )
@@ -102,7 +106,9 @@ fn main() {
     Application::new().run(|cx: &mut App| {
         cx.text_system()
             .add_fonts(vec![
-                include_bytes!("fonts/IBMPlexSans-Regular.ttf").as_slice().into(),
+                include_bytes!("fonts/IBMPlexSans-Regular.ttf")
+                    .as_slice()
+                    .into(),
             ])
             .unwrap();
         cx.open_window(WindowOptions::default(), |_, cx| {

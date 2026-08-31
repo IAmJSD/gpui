@@ -72,7 +72,6 @@ use std::hash::{Hash, Hasher};
 use std::io::Cursor;
 use std::ops;
 use std::time::Duration;
-use web_time::Instant;
 use std::{
     fmt::{self, Debug},
     ops::Range,
@@ -82,6 +81,7 @@ use std::{
 };
 use strum::EnumIter;
 use uuid::Uuid;
+use web_time::Instant;
 
 pub use app_menu::*;
 pub use keyboard::*;

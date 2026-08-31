@@ -20,8 +20,8 @@ use std::{
     time::Duration,
 };
 use util::TryFutureExt;
-use web_time::Instant;
 use waker_fn::waker_fn;
+use web_time::Instant;
 
 #[cfg(any(test, feature = "test-support"))]
 use rand::rngs::StdRng;
