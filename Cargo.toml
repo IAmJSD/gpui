@@ -153,6 +153,14 @@ name = "input"
 path = "examples/input.rs"
 
 [[example]]
+name = "input_web"
+path = "examples/input_web.rs"
+
+[[example]]
+name = "multi_window_web"
+path = "examples/multi_window_web.rs"
+
+[[example]]
 name = "on_window_close_quit"
 path = "examples/on_window_close_quit.rs"
 

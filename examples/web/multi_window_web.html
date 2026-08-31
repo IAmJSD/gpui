@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>gpui on the web -- multi_window_web</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #2e3440;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- gpui creates a full-viewport <canvas id="gpui"> if none exists. -->
+    <script type="module">
+      import init from "./pkg-multi_window_web/multi_window_web.js";
+      init();
+    </script>
+  </body>
+</html>
