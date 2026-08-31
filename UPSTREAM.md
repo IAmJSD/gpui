@@ -114,8 +114,22 @@ time.
   it performs the async WebGPU setup, then calls the launch callback, and
   the app lives on in its registered callbacks. `Instant` is `web-time`'s
   re-export crate-wide (std's panics on wasm; on native it is the same
-  type). Text, input, and clipboard are not implemented yet; text elements
-  render nothing (`NoopTextSystem`).
+  type).
+
+  Text runs on the same cosmic-text stack as Linux --
+  `platform/linux/text_system.rs` moved to `platform/cosmic_text_system.rs`,
+  shared by both -- with one wasm divergence: font-kit does not compile
+  there, so the final style/weight/stretch candidate selection has a local
+  CSS-matching approximation behind `cfg(target_arch = "wasm32")`. The
+  browser has no system fonts; applications add fonts at startup
+  (`hello_web` embeds IBM Plex Sans, which is what the default
+  `.SystemUIFont` resolves to). DOM pointer/keyboard/wheel events are
+  translated to `PlatformInput` (including pen pressure and manual
+  multi-click counting), dark mode tracks `prefers-color-scheme`, cursor
+  styles map to CSS cursors, and the clipboard is a write-through mirror
+  (reads are synchronous in gpui; the browser's clipboard is async and
+  permission-gated, so content copied outside the application cannot be
+  read yet). IME composition is not implemented.
 
   Enabling the target took some dependency surgery: `gpui_util` and
   `gpui_http_client` are vendored under `vendor/` with their desktop-only

@@ -1,26 +1,29 @@
 //! A gpui application that runs in the browser. See `docs/web.md` for how to
 //! build and serve it.
 //!
-//! Text does not render yet (the web backend has no text system), so this
-//! example leans on shapes: colored quads, borders, corner radii and shadows,
-//! plus an animation to prove frames are being driven.
+//! The browser exposes no system fonts, so the example embeds IBM Plex Sans
+//! (`examples/fonts/`, SIL OFL 1.1) -- the same family gpui's default
+//! `.SystemUIFont` resolves to on this backend.
 
 use gpui::{
-    Animation, AnimationExt as _, App, Application, Context, Window, WindowOptions, black, div,
-    prelude::*, px, rgb,
+    Animation, AnimationExt as _, App, Application, Context, MouseButton, Window, WindowOptions,
+    black, div, prelude::*, px, rgb,
 };
 use std::time::Duration;
 
-struct HelloWeb;
+struct HelloWeb {
+    clicks: usize,
+}
 
 impl Render for HelloWeb {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
             .size_full()
             .justify_center()
             .items_center()
             .bg(rgb(0x2e3440))
+            .text_color(rgb(0xeceff4))
             .child(
                 div()
                     .flex()
@@ -31,6 +34,7 @@ impl Render for HelloWeb {
                     .rounded_xl()
                     .shadow_lg()
                     .items_center()
+                    .child(div().text_xl().child("Hello from gpui on the web"))
                     .child(
                         div()
                             .flex()
@@ -39,6 +43,27 @@ impl Render for HelloWeb {
                             .child(square(0xebcb8b))
                             .child(square(0xa3be8c))
                             .child(square(0x81a1c1)),
+                    )
+                    .child(
+                        div()
+                            .id("click-me")
+                            .px_4()
+                            .py_2()
+                            .rounded_md()
+                            .bg(rgb(0x5e81ac))
+                            .cursor_pointer()
+                            .child(if self.clicks == 0 {
+                                "Click me".to_string()
+                            } else {
+                                format!("Clicked {} times", self.clicks)
+                            })
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _event, _window, cx| {
+                                    this.clicks += 1;
+                                    cx.notify();
+                                }),
+                            ),
                     )
                     .child(
                         div()
@@ -75,7 +100,14 @@ fn main() {
     }
 
     Application::new().run(|cx: &mut App| {
-        cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| HelloWeb))
+        cx.text_system()
+            .add_fonts(vec![
+                include_bytes!("fonts/IBMPlexSans-Regular.ttf").as_slice().into(),
+            ])
             .unwrap();
+        cx.open_window(WindowOptions::default(), |_, cx| {
+            cx.new(|_| HelloWeb { clicks: 0 })
+        })
+        .unwrap();
     });
 }

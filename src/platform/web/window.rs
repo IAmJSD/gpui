@@ -1,23 +1,37 @@
 use super::{WebDisplay, WebGpuContext, WebGpuRenderer};
 use crate::{
-    AnyWindowHandle, Bounds, Capslock, DevicePixels, DispatchEventResult, GpuSpecs, Modifiers,
-    Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow,
-    Point, PromptButton, PromptLevel, RequestFrameOptions, Scene, Size, WindowAppearance,
-    WindowBackgroundAppearance, WindowBounds, WindowParams, px, size,
+    AnyWindowHandle, Bounds, Capslock, DevicePixels, DispatchEventResult, GpuSpecs, KeyDownEvent,
+    KeyUpEvent, Keystroke, Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent,
+    MouseExitEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection, Pixels, PlatformAtlas,
+    PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PromptButton,
+    PromptLevel, RequestFrameOptions, Scene, ScrollDelta, ScrollWheelEvent, Size,
+    TouchPhase, WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowParams, point,
+    px, size,
 };
 use anyhow::{Context as _, Result};
 use futures::channel::oneshot;
-use raw_window_handle as rwh;
-use std::cell::RefCell;
+use std::any::Any;
+use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
-use wasm_bindgen::{JsCast as _, prelude::Closure};
-use web_sys::HtmlCanvasElement;
+use std::time::Duration;
+use wasm_bindgen::{JsCast, prelude::Closure};
+use web_sys::{HtmlCanvasElement, KeyboardEvent, PointerEvent, WheelEvent};
+use web_time::Instant;
 
 /// If an element with this id exists and is a `<canvas>`, the window renders
 /// into it; otherwise a full-viewport canvas is created and appended to the
 /// document body.
 const CANVAS_ELEMENT_ID: &str = "gpui";
+
+/// Consecutive clicks within this interval and [`DOUBLE_CLICK_DISTANCE`] of
+/// each other increment the click count, like the X11 backend's own counting
+/// (the DOM's `detail` counter is not available on pointer events).
+const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(400);
+const DOUBLE_CLICK_DISTANCE: Pixels = px(4.0);
+
+/// Kept in sync with SCROLL_LINES in the Linux backends.
+const SCROLL_LINES: f32 = 3.0;
 
 #[derive(Default)]
 struct Callbacks {
@@ -33,15 +47,31 @@ struct Callbacks {
     appearance_changed: RefCell<Option<Box<dyn FnMut()>>>,
 }
 
+struct ClickState {
+    last_click: Instant,
+    last_position: Point<Pixels>,
+    button: MouseButton,
+    count: usize,
+}
+
 struct WebWindowState {
     renderer: WebGpuRenderer,
     input_handler: Option<PlatformInputHandler>,
+    mouse_position: Point<Pixels>,
+    modifiers: Modifiers,
+    capslock: Capslock,
+    click: Option<ClickState>,
 }
 
 pub(crate) struct WebWindowInner {
     canvas: HtmlCanvasElement,
     state: RefCell<WebWindowState>,
     callbacks: Callbacks,
+    active: Cell<bool>,
+    hovered: Cell<bool>,
+    /// The DOM event listener closures; dropping them detaches nothing, but
+    /// they must stay alive for as long as the listeners can fire.
+    listeners: RefCell<Vec<Box<dyn Any>>>,
 }
 
 pub(crate) struct WebWindow(Rc<WebWindowInner>);
@@ -98,10 +128,22 @@ impl WebWindow {
             state: RefCell::new(WebWindowState {
                 renderer,
                 input_handler: None,
+                mouse_position: Point::default(),
+                modifiers: Modifiers::default(),
+                capslock: Capslock::default(),
+                click: None,
             }),
             callbacks: Callbacks::default(),
+            active: Cell::new(
+                document
+                    .has_focus()
+                    .unwrap_or(false),
+            ),
+            hovered: Cell::new(false),
+            listeners: RefCell::new(Vec::new()),
         }));
         start_frame_loop(Rc::downgrade(&window.0));
+        setup_event_listeners(&window.0);
         Ok(window)
     }
 }
@@ -127,6 +169,13 @@ fn device_size_for(canvas: &HtmlCanvasElement) -> Size<DevicePixels> {
         width: DevicePixels((css.width.0 * scale).round().max(1.0) as i32),
         height: DevicePixels((css.height.0 * scale).round().max(1.0) as i32),
     }
+}
+
+fn prefers_dark_appearance() -> bool {
+    web_sys::window()
+        .and_then(|window| window.match_media("(prefers-color-scheme: dark)").ok())
+        .flatten()
+        .is_some_and(|query| query.matches())
 }
 
 /// Drives the window from `requestAnimationFrame`: applies any size or scale
@@ -181,6 +230,42 @@ impl WebWindowInner {
         }
         replace_if_empty(&self.callbacks.request_frame, request_frame);
     }
+
+    fn dispatch_input(&self, input: PlatformInput) -> DispatchEventResult {
+        let mut callback = self.callbacks.input.borrow_mut().take();
+        let result = if let Some(callback) = callback.as_mut() {
+            callback(input)
+        } else {
+            DispatchEventResult::default()
+        };
+        replace_if_empty(&self.callbacks.input, callback);
+        result
+    }
+
+    /// Increments or restarts the click chain and returns the click count for
+    /// a press at `position`.
+    fn click_count(&self, button: MouseButton, position: Point<Pixels>) -> usize {
+        let mut state = self.state.borrow_mut();
+        let now = Instant::now();
+        let count = match &state.click {
+            Some(click)
+                if click.button == button
+                    && now.duration_since(click.last_click) <= DOUBLE_CLICK_INTERVAL
+                    && (click.last_position.x - position.x).abs() <= DOUBLE_CLICK_DISTANCE
+                    && (click.last_position.y - position.y).abs() <= DOUBLE_CLICK_DISTANCE =>
+            {
+                click.count + 1
+            }
+            _ => 1,
+        };
+        state.click = Some(ClickState {
+            last_click: now,
+            last_position: position,
+            button,
+            count,
+        });
+        count
+    }
 }
 
 /// Put a taken callback back unless a reentrant call installed a new one
@@ -192,17 +277,368 @@ fn replace_if_empty<T>(slot: &RefCell<Option<T>>, value: Option<T>) {
     }
 }
 
-impl rwh::HasWindowHandle for WebWindow {
-    fn window_handle(&self) -> Result<rwh::WindowHandle<'_>, rwh::HandleError> {
-        let raw = rwh::RawWindowHandle::Web(rwh::WebWindowHandle::new(1));
-        Ok(unsafe { rwh::WindowHandle::borrow_raw(raw) })
+// --- DOM input translation --- //
+
+fn mouse_button(button: i16) -> Option<MouseButton> {
+    match button {
+        0 => Some(MouseButton::Left),
+        1 => Some(MouseButton::Middle),
+        2 => Some(MouseButton::Right),
+        3 => Some(MouseButton::Navigate(NavigationDirection::Back)),
+        4 => Some(MouseButton::Navigate(NavigationDirection::Forward)),
+        _ => None,
     }
 }
 
-impl rwh::HasDisplayHandle for WebWindow {
-    fn display_handle(&self) -> Result<rwh::DisplayHandle<'_>, rwh::HandleError> {
-        let raw = rwh::RawDisplayHandle::Web(rwh::WebDisplayHandle::new());
-        Ok(unsafe { rwh::DisplayHandle::borrow_raw(raw) })
+/// The highest-priority button held down, from the `buttons` bitmask.
+fn pressed_button(buttons: u16) -> Option<MouseButton> {
+    if buttons & 1 != 0 {
+        Some(MouseButton::Left)
+    } else if buttons & 2 != 0 {
+        Some(MouseButton::Right)
+    } else if buttons & 4 != 0 {
+        Some(MouseButton::Middle)
+    } else if buttons & 8 != 0 {
+        Some(MouseButton::Navigate(NavigationDirection::Back))
+    } else if buttons & 16 != 0 {
+        Some(MouseButton::Navigate(NavigationDirection::Forward))
+    } else {
+        None
+    }
+}
+
+fn mouse_event_position(event: &web_sys::MouseEvent) -> Point<Pixels> {
+    point(px(event.offset_x() as f32), px(event.offset_y() as f32))
+}
+
+fn mouse_event_modifiers(event: &web_sys::MouseEvent) -> Modifiers {
+    Modifiers {
+        control: event.ctrl_key(),
+        alt: event.alt_key(),
+        shift: event.shift_key(),
+        platform: event.meta_key(),
+        function: false,
+    }
+}
+
+fn keyboard_event_modifiers(event: &KeyboardEvent) -> Modifiers {
+    Modifiers {
+        control: event.ctrl_key(),
+        alt: event.alt_key(),
+        shift: event.shift_key(),
+        platform: event.meta_key(),
+        function: false,
+    }
+}
+
+/// 1.0 for mice (the DOM reports 0.5 for any held mouse button), the real
+/// pressure for pens.
+fn pointer_pressure(event: &PointerEvent) -> f32 {
+    if event.pointer_type() == "pen" {
+        event.pressure()
+    } else {
+        1.0
+    }
+}
+
+fn is_modifier_key(key: &str) -> bool {
+    matches!(key, "Shift" | "Control" | "Alt" | "Meta" | "CapsLock")
+}
+
+/// Translates a DOM `KeyboardEvent.key` value into gpui's keystroke, matching
+/// the naming the desktop backends produce ("enter", "left", lowercase
+/// letters with shift as a modifier, ...).
+fn keystroke_for(event: &KeyboardEvent) -> Keystroke {
+    let dom_key = event.key();
+    let key = match dom_key.as_str() {
+        " " => "space".to_string(),
+        "Enter" => "enter".to_string(),
+        "Tab" => "tab".to_string(),
+        "Escape" => "escape".to_string(),
+        "Backspace" => "backspace".to_string(),
+        "Delete" => "delete".to_string(),
+        "ArrowLeft" => "left".to_string(),
+        "ArrowRight" => "right".to_string(),
+        "ArrowUp" => "up".to_string(),
+        "ArrowDown" => "down".to_string(),
+        "PageUp" => "pageup".to_string(),
+        "PageDown" => "pagedown".to_string(),
+        "Home" => "home".to_string(),
+        "End" => "end".to_string(),
+        "Insert" => "insert".to_string(),
+        "ContextMenu" => "menu".to_string(),
+        key if key.chars().count() == 1 => key.to_lowercase(),
+        // Remaining named keys ("F1".."F35", "PrintScreen", ...) match gpui's
+        // names when lowercased, or fall through harmlessly unbound.
+        key => key.to_lowercase(),
+    };
+    Keystroke {
+        modifiers: keyboard_event_modifiers(event),
+        key,
+        key_char: None,
+    }
+    // Derives key_char ("a" -> "a", shift-a -> "A", enter -> "\n"; nothing
+    // for ctrl/cmd chords) the same way simulated keystrokes do.
+    .with_simulated_ime()
+}
+
+/// Registers a DOM event listener on `target` and keeps the closure alive in
+/// the window.
+fn add_listener<E: JsCast + 'static>(
+    inner: &Rc<WebWindowInner>,
+    target: &web_sys::EventTarget,
+    event_name: &str,
+    passive: Option<bool>,
+    handler: impl Fn(&WebWindowInner, E) + 'static,
+) {
+    let weak = Rc::downgrade(inner);
+    let closure = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+        let Some(inner) = weak.upgrade() else {
+            return;
+        };
+        let Ok(event) = event.dyn_into::<E>() else {
+            return;
+        };
+        handler(&inner, event);
+    });
+    let result = match passive {
+        Some(passive) => {
+            let options = web_sys::AddEventListenerOptions::new();
+            options.set_passive(passive);
+            target.add_event_listener_with_callback_and_add_event_listener_options(
+                event_name,
+                closure.as_ref().unchecked_ref(),
+                &options,
+            )
+        }
+        None => {
+            target.add_event_listener_with_callback(event_name, closure.as_ref().unchecked_ref())
+        }
+    };
+    if result.is_err() {
+        log::error!("failed to add a DOM listener for {event_name:?}");
+    }
+    inner.listeners.borrow_mut().push(Box::new(closure));
+}
+
+fn setup_event_listeners(inner: &Rc<WebWindowInner>) {
+    let canvas: &web_sys::EventTarget = inner.canvas.as_ref();
+
+    add_listener::<PointerEvent>(inner, canvas, "pointerdown", None, |inner, event| {
+        let Some(button) = mouse_button(event.button()) else {
+            return;
+        };
+        let position = mouse_event_position(&event);
+        let first_mouse = !inner.active.get();
+        let click_count = inner.click_count(button, position);
+        {
+            let mut state = inner.state.borrow_mut();
+            state.mouse_position = position;
+            state.modifiers = mouse_event_modifiers(&event);
+        }
+        // Keep receiving pointermove/pointerup while dragging outside the
+        // canvas.
+        inner.canvas.set_pointer_capture(event.pointer_id()).ok();
+        let result = inner.dispatch_input(PlatformInput::MouseDown(MouseDownEvent {
+            button,
+            position,
+            modifiers: mouse_event_modifiers(&event),
+            click_count,
+            first_mouse,
+            pressure: pointer_pressure(&event),
+        }));
+        if result.default_prevented {
+            event.prevent_default();
+        }
+    });
+
+    add_listener::<PointerEvent>(inner, canvas, "pointerup", None, |inner, event| {
+        let Some(button) = mouse_button(event.button()) else {
+            return;
+        };
+        let position = mouse_event_position(&event);
+        let click_count = inner
+            .state
+            .borrow()
+            .click
+            .as_ref()
+            .map_or(1, |click| click.count);
+        let result = inner.dispatch_input(PlatformInput::MouseUp(MouseUpEvent {
+            button,
+            position,
+            modifiers: mouse_event_modifiers(&event),
+            click_count,
+            pressure: pointer_pressure(&event),
+        }));
+        if result.default_prevented {
+            event.prevent_default();
+        }
+    });
+
+    add_listener::<PointerEvent>(inner, canvas, "pointermove", None, |inner, event| {
+        let position = mouse_event_position(&event);
+        inner.state.borrow_mut().mouse_position = position;
+        inner.dispatch_input(PlatformInput::MouseMove(MouseMoveEvent {
+            position,
+            pressed_button: pressed_button(event.buttons()),
+            modifiers: mouse_event_modifiers(&event),
+            pressure: pointer_pressure(&event),
+        }));
+    });
+
+    add_listener::<PointerEvent>(inner, canvas, "pointerenter", None, |inner, _event| {
+        inner.hovered.set(true);
+        let mut callback = inner.callbacks.hover_status_change.borrow_mut().take();
+        if let Some(callback) = callback.as_mut() {
+            callback(true);
+        }
+        replace_if_empty(&inner.callbacks.hover_status_change, callback);
+    });
+
+    add_listener::<PointerEvent>(inner, canvas, "pointerleave", None, |inner, event| {
+        inner.hovered.set(false);
+        let mut callback = inner.callbacks.hover_status_change.borrow_mut().take();
+        if let Some(callback) = callback.as_mut() {
+            callback(false);
+        }
+        replace_if_empty(&inner.callbacks.hover_status_change, callback);
+        inner.dispatch_input(PlatformInput::MouseExited(MouseExitEvent {
+            position: mouse_event_position(&event),
+            pressed_button: pressed_button(event.buttons()),
+            modifiers: mouse_event_modifiers(&event),
+        }));
+    });
+
+    // Must be non-passive to be able to stop the page from scrolling.
+    add_listener::<WheelEvent>(inner, canvas, "wheel", Some(false), |inner, event| {
+        let position = mouse_event_position(&event);
+        // The DOM's positive-delta direction is the opposite of gpui's.
+        let (dx, dy) = (-event.delta_x() as f32, -event.delta_y() as f32);
+        let delta = match event.delta_mode() {
+            WheelEvent::DOM_DELTA_PIXEL => ScrollDelta::Pixels(point(px(dx), px(dy))),
+            WheelEvent::DOM_DELTA_LINE => ScrollDelta::Lines(point(dx, dy)),
+            // A page is approximated as one wheel notch's worth of lines.
+            _ => ScrollDelta::Lines(point(dx * SCROLL_LINES, dy * SCROLL_LINES)),
+        };
+        inner.dispatch_input(PlatformInput::ScrollWheel(ScrollWheelEvent {
+            position,
+            delta,
+            modifiers: mouse_event_modifiers(&event),
+            touch_phase: TouchPhase::Moved,
+        }));
+        event.prevent_default();
+    });
+
+    add_listener::<web_sys::MouseEvent>(inner, canvas, "contextmenu", None, |_inner, event| {
+        // Right-click is delivered through pointerdown/up; the browser's own
+        // context menu would shadow gpui's.
+        event.prevent_default();
+    });
+
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let window_target: &web_sys::EventTarget = window.as_ref();
+
+    add_listener::<KeyboardEvent>(inner, window_target, "keydown", None, |inner, event| {
+        let modifiers = keyboard_event_modifiers(&event);
+        let capslock = Capslock {
+            on: event.get_modifier_state("CapsLock"),
+        };
+        if is_modifier_key(&event.key()) {
+            {
+                let mut state = inner.state.borrow_mut();
+                state.modifiers = modifiers;
+                state.capslock = capslock;
+            }
+            inner.dispatch_input(PlatformInput::ModifiersChanged(ModifiersChangedEvent {
+                modifiers,
+                capslock,
+            }));
+            return;
+        }
+        inner.state.borrow_mut().modifiers = modifiers;
+        let result = inner.dispatch_input(PlatformInput::KeyDown(KeyDownEvent {
+            keystroke: keystroke_for(&event),
+            is_held: event.repeat(),
+        }));
+        if result.default_prevented {
+            event.prevent_default();
+        }
+    });
+
+    add_listener::<KeyboardEvent>(inner, window_target, "keyup", None, |inner, event| {
+        let modifiers = keyboard_event_modifiers(&event);
+        let capslock = Capslock {
+            on: event.get_modifier_state("CapsLock"),
+        };
+        if is_modifier_key(&event.key()) {
+            {
+                let mut state = inner.state.borrow_mut();
+                state.modifiers = modifiers;
+                state.capslock = capslock;
+            }
+            inner.dispatch_input(PlatformInput::ModifiersChanged(ModifiersChangedEvent {
+                modifiers,
+                capslock,
+            }));
+            return;
+        }
+        let result = inner.dispatch_input(PlatformInput::KeyUp(KeyUpEvent {
+            keystroke: keystroke_for(&event),
+        }));
+        if result.default_prevented {
+            event.prevent_default();
+        }
+    });
+
+    add_listener::<web_sys::Event>(inner, window_target, "focus", None, |inner, _event| {
+        inner.active.set(true);
+        let mut callback = inner.callbacks.active_status_change.borrow_mut().take();
+        if let Some(callback) = callback.as_mut() {
+            callback(true);
+        }
+        replace_if_empty(&inner.callbacks.active_status_change, callback);
+    });
+
+    add_listener::<web_sys::Event>(inner, window_target, "blur", None, |inner, _event| {
+        inner.active.set(false);
+        let mut callback = inner.callbacks.active_status_change.borrow_mut().take();
+        if let Some(callback) = callback.as_mut() {
+            callback(false);
+        }
+        replace_if_empty(&inner.callbacks.active_status_change, callback);
+    });
+
+    if let Ok(Some(query)) = window.match_media("(prefers-color-scheme: dark)") {
+        let target: &web_sys::EventTarget = query.as_ref();
+        add_listener::<web_sys::Event>(inner, target, "change", None, |inner, _event| {
+            let mut callback = inner.callbacks.appearance_changed.borrow_mut().take();
+            if let Some(callback) = callback.as_mut() {
+                callback();
+            }
+            replace_if_empty(&inner.callbacks.appearance_changed, callback);
+        });
+    }
+}
+
+impl raw_window_handle::HasWindowHandle for WebWindow {
+    fn window_handle(
+        &self,
+    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+        let raw =
+            raw_window_handle::RawWindowHandle::Web(raw_window_handle::WebWindowHandle::new(1));
+        Ok(unsafe { raw_window_handle::WindowHandle::borrow_raw(raw) })
+    }
+}
+
+impl raw_window_handle::HasDisplayHandle for WebWindow {
+    fn display_handle(
+        &self,
+    ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+        let raw =
+            raw_window_handle::RawDisplayHandle::Web(raw_window_handle::WebDisplayHandle::new());
+        Ok(unsafe { raw_window_handle::DisplayHandle::borrow_raw(raw) })
     }
 }
 
@@ -236,7 +672,11 @@ impl PlatformWindow for WebWindow {
     }
 
     fn appearance(&self) -> WindowAppearance {
-        WindowAppearance::Light
+        if prefers_dark_appearance() {
+            WindowAppearance::Dark
+        } else {
+            WindowAppearance::Light
+        }
     }
 
     fn display(&self) -> Option<Rc<dyn PlatformDisplay>> {
@@ -244,15 +684,15 @@ impl PlatformWindow for WebWindow {
     }
 
     fn mouse_position(&self) -> Point<Pixels> {
-        Point::default()
+        self.0.state.borrow().mouse_position
     }
 
     fn modifiers(&self) -> Modifiers {
-        Modifiers::default()
+        self.0.state.borrow().modifiers
     }
 
     fn capslock(&self) -> Capslock {
-        Capslock::default()
+        self.0.state.borrow().capslock
     }
 
     fn set_input_handler(&mut self, input_handler: PlatformInputHandler) {
@@ -279,14 +719,11 @@ impl PlatformWindow for WebWindow {
     }
 
     fn is_active(&self) -> bool {
-        web_sys::window()
-            .and_then(|window| window.document())
-            .and_then(|document| document.has_focus().ok())
-            .unwrap_or(false)
+        self.0.active.get()
     }
 
     fn is_hovered(&self) -> bool {
-        false
+        self.0.hovered.get()
     }
 
     fn set_title(&mut self, title: &str) {

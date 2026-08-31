@@ -486,6 +486,17 @@ features = ["js"]
 version = "0.3"
 features = ["wasm_js"]
 
+# Same text stack as Linux, minus fontconfig (no system fonts to discover in
+# a browser; fonts are added via `TextSystem::add_fonts`).
+[target.'cfg(target_arch = "wasm32")'.dependencies.cosmic-text]
+version = "0.14.0"
+default-features = false
+features = [
+    "std",
+    "swash",
+    "wasm-web",
+]
+
 [target.'cfg(target_arch = "wasm32")'.dependencies.wasm-bindgen]
 version = "0.2"
 
@@ -499,13 +510,24 @@ version = "0.3"
 version = "0.3"
 features = [
     "console",
+    "AddEventListenerOptions",
+    "Clipboard",
     "CssStyleDeclaration",
     "Document",
     "DomRect",
     "Element",
+    "Event",
+    "EventTarget",
     "HtmlCanvasElement",
     "HtmlElement",
+    "KeyboardEvent",
+    "MediaQueryList",
+    "MediaQueryListEvent",
+    "MouseEvent",
+    "Navigator",
     "Performance",
+    "PointerEvent",
+    "WheelEvent",
     "Window",
 ]
 
@@ -652,7 +674,7 @@ optional = true
 version = "25.0"
 features = ["wgsl-in"]
 
-[target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos"))'.dependencies.pathfinder_geometry]
+[target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos", target_arch = "wasm32"))'.dependencies.pathfinder_geometry]
 version = "0.5"
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "windows"))'.dependencies.scap]

@@ -112,9 +112,8 @@ impl PlatformTextSystem for CosmicTextSystem {
             })
             .collect::<SmallVec<[_; 4]>>();
 
-        let ix =
-            font_kit::matching::find_best_match(&candidate_properties, &font_into_properties(font))
-                .context("requested font family contains no font matching the other parameters")?;
+        let ix = find_best_match(&candidate_properties, font)
+            .context("requested font family contains no font matching the other parameters")?;
 
         Ok(candidates[ix])
     }
@@ -538,6 +537,63 @@ impl From<FontStyle> for cosmic_text::Style {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn find_best_match(candidates: &[font_kit::properties::Properties], font: &crate::Font) -> Option<usize> {
+    font_kit::matching::find_best_match(candidates, &font_into_properties(font)).ok()
+}
+
+/// The face properties that participate in matching, in fontdb's terms.
+/// font-kit does not compile for wasm, so the web build matches with a local
+/// approximation of CSS font matching instead.
+#[cfg(target_arch = "wasm32")]
+struct FaceProperties {
+    style: cosmic_text::Style,
+    weight: u16,
+    stretch: cosmic_text::Stretch,
+}
+
+#[cfg(target_arch = "wasm32")]
+fn find_best_match(candidates: &[FaceProperties], font: &crate::Font) -> Option<usize> {
+    use cosmic_text::{Stretch, Style};
+
+    let stretch_ordinal = |stretch: Stretch| -> i32 {
+        match stretch {
+            Stretch::UltraCondensed => 1,
+            Stretch::ExtraCondensed => 2,
+            Stretch::Condensed => 3,
+            Stretch::SemiCondensed => 4,
+            Stretch::Normal => 5,
+            Stretch::SemiExpanded => 6,
+            Stretch::Expanded => 7,
+            Stretch::ExtraExpanded => 8,
+            Stretch::UltraExpanded => 9,
+        }
+    };
+    // How acceptable each style is for the requested one, best first, per the
+    // CSS font matching algorithm's style step.
+    let style_rank = |style: Style| -> u32 {
+        let preference = match font.style {
+            crate::FontStyle::Normal => [Style::Normal, Style::Oblique, Style::Italic],
+            crate::FontStyle::Italic => [Style::Italic, Style::Oblique, Style::Normal],
+            crate::FontStyle::Oblique => [Style::Oblique, Style::Italic, Style::Normal],
+        };
+        preference.iter().position(|s| *s == style).unwrap_or(3) as u32
+    };
+
+    candidates
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, properties)| {
+            (
+                style_rank(properties.style),
+                (stretch_ordinal(properties.stretch) - stretch_ordinal(Stretch::Normal)).abs(),
+                (properties.weight as i32 - font.weight.0 as i32).abs(),
+            )
+        })
+        .map(|(ix, _)| ix)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn font_into_properties(font: &crate::Font) -> font_kit::properties::Properties {
     font_kit::properties::Properties {
         style: match font.style {
@@ -550,6 +606,16 @@ fn font_into_properties(font: &crate::Font) -> font_kit::properties::Properties 
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+fn face_info_into_properties(face_info: &cosmic_text::fontdb::FaceInfo) -> FaceProperties {
+    FaceProperties {
+        style: face_info.style,
+        weight: face_info.weight.0,
+        stretch: face_info.stretch,
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn face_info_into_properties(
     face_info: &cosmic_text::fontdb::FaceInfo,
 ) -> font_kit::properties::Properties {

@@ -11,8 +11,28 @@ Working:
 
 - The full gpui programming model: entities, layout (taffy), styling,
   animations, `Application::run` / `open_window`.
-- Rendering of quads, borders, shadows, underlines, paths and sprites via
-  WebGPU (a port of the blade renderer; see `src/platform/web/renderer.rs`).
+- Rendering of quads, borders, shadows, underlines, paths, sprites and text
+  via WebGPU (a port of the blade renderer; see
+  `src/platform/web/renderer.rs`).
+- **Text**, through the same cosmic-text stack as Linux. The browser
+  exposes no system fonts, so the font database starts empty: add fonts
+  with `cx.text_system().add_fonts(...)` at startup. gpui's default
+  `.SystemUIFont` resolves to "IBM Plex Sans" on this backend; the
+  `hello_web` example embeds it (`examples/fonts/`, SIL OFL 1.1).
+- **Input**: pointer events (with pen pressure and manual multi-click
+  counting), the scroll wheel (pixel and line deltas), keyboard events
+  (modifier tracking, capslock, browser default suppressed exactly when
+  gpui marks an event handled), hover and focus tracking. Right-click
+  reaches gpui; the browser context menu is suppressed.
+- Dark mode: `prefers-color-scheme` is reflected in `window_appearance` and
+  appearance-change callbacks.
+- Cursor styles (CSS cursors) and `open_url` (new tab; subject to the
+  popup blocker outside user gestures).
+- Clipboard, with a caveat: the browser clipboard is async and
+  permission-gated while gpui's `read_from_clipboard` is synchronous, so
+  reads are served from a mirror of what the application last wrote.
+  Copying to other apps works for text (best effort); pasting content
+  copied *outside* the application does not reach gpui yet.
 - A single window, backed by a canvas. If the page contains
   `<canvas id="gpui">` it is used; otherwise a full-viewport canvas is
   appended to `<body>`. Device-pixel-ratio changes and canvas resizes are
@@ -20,11 +40,9 @@ Working:
 
 Not yet implemented:
 
-- **Text.** The web backend currently uses the no-op text system, so text
-  elements lay out approximately and render nothing.
-- **Input.** DOM events are not yet translated to `PlatformInput`.
-- Clipboard, IME, dark-mode (`prefers-color-scheme`) tracking, and multiple
-  windows.
+- IME composition (dead keys and CJK input methods do not compose;
+  plain typing works via key events).
+- Multiple windows, file drag-and-drop, pinch gestures.
 - `BackgroundExecutor::block` cannot work on the web (there is no second
   thread to make progress while the caller waits) and will panic if reached.
 - The `test-support` feature does not build on wasm.

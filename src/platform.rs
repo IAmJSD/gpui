@@ -17,6 +17,17 @@ mod mac;
 ))]
 mod blade;
 
+// The cosmic-text text system is pure Rust and shared by the Linux backends
+// and the web backend.
+#[cfg(any(
+    all(
+        any(target_os = "linux", target_os = "freebsd"),
+        any(feature = "x11", feature = "wayland")
+    ),
+    target_arch = "wasm32"
+))]
+mod cosmic_text_system;
+
 #[cfg(any(test, feature = "test-support"))]
 mod test;
 
@@ -76,6 +87,14 @@ pub use app_menu::*;
 pub use keyboard::*;
 pub use keystroke::*;
 
+#[cfg(any(
+    all(
+        any(target_os = "linux", target_os = "freebsd"),
+        any(feature = "x11", feature = "wayland")
+    ),
+    target_arch = "wasm32"
+))]
+pub(crate) use cosmic_text_system::*;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 pub(crate) use linux::*;
 #[cfg(target_os = "macos")]

@@ -1,6 +1,6 @@
 use crate::{
     Action, AnyWindowHandle, BackgroundExecutor, ClipboardItem, CursorStyle, DummyKeyboardMapper,
-    ForegroundExecutor, Keymap, Menu, MenuItem, NoopTextSystem, PathPromptOptions, Platform,
+    ForegroundExecutor, Keymap, Menu, MenuItem, PathPromptOptions, Platform,
     PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
     PlatformWindow, Task, WindowAppearance, WindowParams,
 };
@@ -37,6 +37,12 @@ pub(crate) struct WebPlatform {
     /// requires it.
     gpu: Rc<RefCell<Option<Arc<WebGpuContext>>>>,
     active_window: RefCell<Option<AnyWindowHandle>>,
+    /// The browser's clipboard is async and permission-gated while gpui's
+    /// `read_from_clipboard` is synchronous, so reads come from this mirror
+    /// of what the application last wrote. Text is additionally pushed to
+    /// the real clipboard (best effort) so it can be pasted outside the app;
+    /// content copied in other pages is not visible here.
+    clipboard: RefCell<Option<ClipboardItem>>,
 }
 
 impl WebPlatform {
@@ -45,9 +51,13 @@ impl WebPlatform {
         Self {
             background_executor: BackgroundExecutor::new(dispatcher.clone()),
             foreground_executor: ForegroundExecutor::new(dispatcher),
-            text_system: Arc::new(NoopTextSystem::new()),
+            // Starts with an empty font database: there is no system font
+            // enumeration in a browser. Applications add fonts with
+            // `cx.text_system().add_fonts(...)`.
+            text_system: Arc::new(crate::CosmicTextSystem::new()),
             gpu: Rc::new(RefCell::new(None)),
             active_window: RefCell::new(None),
+            clipboard: RefCell::new(None),
         }
     }
 }
@@ -128,10 +138,24 @@ impl Platform for WebPlatform {
     }
 
     fn window_appearance(&self) -> WindowAppearance {
-        WindowAppearance::Light
+        let dark = web_sys::window()
+            .and_then(|window| window.match_media("(prefers-color-scheme: dark)").ok())
+            .flatten()
+            .is_some_and(|query| query.matches());
+        if dark {
+            WindowAppearance::Dark
+        } else {
+            WindowAppearance::Light
+        }
     }
 
-    fn open_url(&self, _url: &str) {}
+    fn open_url(&self, url: &str) {
+        if let Some(window) = web_sys::window() {
+            // May be blocked by the popup blocker when not called from a
+            // user gesture; nothing to do about that here.
+            window.open_with_url_and_target(url, "_blank").ok();
+        }
+    }
 
     fn on_open_urls(&self, _callback: Box<dyn FnMut(Vec<String>)>) {}
 
@@ -190,16 +214,56 @@ impl Platform for WebPlatform {
         Err(anyhow!("auxiliary executables do not exist on the web"))
     }
 
-    fn set_cursor_style(&self, _style: CursorStyle) {}
+    fn set_cursor_style(&self, style: CursorStyle) {
+        let css = match style {
+            CursorStyle::Arrow => "default",
+            CursorStyle::IBeam => "text",
+            CursorStyle::Crosshair => "crosshair",
+            CursorStyle::ClosedHand => "grabbing",
+            CursorStyle::OpenHand => "grab",
+            CursorStyle::PointingHand => "pointer",
+            CursorStyle::ResizeLeft => "w-resize",
+            CursorStyle::ResizeRight => "e-resize",
+            CursorStyle::ResizeLeftRight => "ew-resize",
+            CursorStyle::ResizeUp => "n-resize",
+            CursorStyle::ResizeDown => "s-resize",
+            CursorStyle::ResizeUpDown => "ns-resize",
+            CursorStyle::ResizeUpLeftDownRight => "nesw-resize",
+            CursorStyle::ResizeUpRightDownLeft => "nwse-resize",
+            CursorStyle::ResizeColumn => "col-resize",
+            CursorStyle::ResizeRow => "row-resize",
+            CursorStyle::IBeamCursorForVerticalLayout => "vertical-text",
+            CursorStyle::OperationNotAllowed => "not-allowed",
+            CursorStyle::DragLink => "alias",
+            CursorStyle::DragCopy => "copy",
+            CursorStyle::ContextualMenu => "context-menu",
+            CursorStyle::None => "none",
+        };
+        if let Some(body) = web_sys::window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.body())
+        {
+            body.style().set_property("cursor", css).ok();
+        }
+    }
 
     fn should_auto_hide_scrollbars(&self) -> bool {
         true
     }
 
-    fn write_to_clipboard(&self, _item: ClipboardItem) {}
+    fn write_to_clipboard(&self, item: ClipboardItem) {
+        if let Some(text) = item.text() {
+            if let Some(window) = web_sys::window() {
+                // Fire and forget; the promise resolves (or is denied) on its
+                // own and the mirror below covers in-app paste either way.
+                let _ = window.navigator().clipboard().write_text(&text);
+            }
+        }
+        *self.clipboard.borrow_mut() = Some(item);
+    }
 
     fn read_from_clipboard(&self) -> Option<ClipboardItem> {
-        None
+        self.clipboard.borrow().clone()
     }
 
     fn write_credentials(&self, _url: &str, _username: &str, _password: &[u8]) -> Task<Result<()>> {
