@@ -108,6 +108,10 @@ pub(crate) struct WebWindowInner {
     /// A paste keystroke being held back until the `paste` event delivers
     /// the clipboard contents (or the fallback timeout fires).
     pending_paste_keystroke: RefCell<Option<KeyDownEvent>>,
+    /// True between `compositionstart` and `compositionend`. The hidden
+    /// input's value is the IME's scratch space while it is set, and gpui's
+    /// to clear once it is not.
+    composing: Cell<bool>,
     callbacks: Callbacks,
     active: Cell<bool>,
     hovered: Cell<bool>,
@@ -217,12 +221,12 @@ impl WebWindow {
             }),
             pinch: RefCell::new(PinchState::default()),
             pending_paste_keystroke: RefCell::new(None),
+            composing: Cell::new(false),
             callbacks: Callbacks::default(),
-            active: Cell::new(
-                document
-                    .has_focus()
-                    .unwrap_or(false),
-            ),
+            // Set by the `focus` listener once the hidden input below is
+            // focused; with several windows on a page only one of them is
+            // active at a time, so the page's own focus is not the answer.
+            active: Cell::new(false),
             hovered: Cell::new(false),
             listeners: RefCell::new(Vec::new()),
             weak_self: RefCell::new(Weak::new()),
@@ -230,6 +234,10 @@ impl WebWindow {
         *window.0.weak_self.borrow_mut() = Rc::downgrade(&window.0);
         start_frame_loop(Rc::downgrade(&window.0));
         setup_event_listeners(&window.0);
+        // Keyboard events are listened for on the hidden input, so the newest
+        // window takes the keyboard the moment it opens -- without this the
+        // page would need a click before it could be typed into.
+        window.0.ime_input.focus().ok();
         Ok(window)
     }
 }
@@ -375,6 +383,40 @@ impl WebWindowInner {
             if state.input_handler.is_none() {
                 state.input_handler = Some(handler);
             }
+        }
+    }
+
+    /// Moves the hidden input to `origin` (window coordinates, which are the
+    /// viewport's because the canvas fills it).
+    fn place_ime_input(&self, origin: Point<Pixels>) {
+        let style = self.ime_input.style();
+        style
+            .set_property("left", &format!("{}px", origin.x.0))
+            .ok();
+        style.set_property("top", &format!("{}px", origin.y.0)).ok();
+    }
+
+    /// Parks the hidden input at the caret so the browser draws the IME
+    /// candidate window there. `update_ime_position` only fires when an
+    /// application asks gpui to invalidate the character coordinates, but the
+    /// browser needs the element in the right place for every composition, so
+    /// the backend asks the input handler itself.
+    fn place_ime_input_at_caret(&self) {
+        let mut origin = None;
+        self.with_input_handler(|handler| {
+            if let Some(selection) = handler.selected_text_range(true) {
+                let caret = if selection.reversed {
+                    selection.range.start
+                } else {
+                    selection.range.end
+                };
+                origin = handler
+                    .bounds_for_range(caret..caret)
+                    .map(|bounds| bounds.origin);
+            }
+        });
+        if let Some(origin) = origin {
+            self.place_ime_input(origin);
         }
     }
 
@@ -648,9 +690,13 @@ fn setup_event_listeners(inner: &Rc<WebWindowInner>) {
         // canvas.
         inner.canvas.set_pointer_capture(event.pointer_id()).ok();
         // Keyboard input, and IME composition in particular, targets the
-        // hidden input; key events bubble from it to the window listeners.
+        // hidden input, which is where this window's key listeners live.
+        // Suppressing the pointer event's default action is what makes the
+        // focus stick: the browser would otherwise move it to the body, which
+        // owns no listeners, and swallow every subsequent keystroke.
+        event.prevent_default();
         inner.ime_input.focus().ok();
-        let result = inner.dispatch_input(PlatformInput::MouseDown(MouseDownEvent {
+        inner.dispatch_input(PlatformInput::MouseDown(MouseDownEvent {
             button,
             position,
             modifiers: mouse_event_modifiers(&event),
@@ -658,9 +704,6 @@ fn setup_event_listeners(inner: &Rc<WebWindowInner>) {
             first_mouse,
             pressure: pointer_pressure(&event),
         }));
-        if result.default_prevented {
-            event.prevent_default();
-        }
     });
 
     add_listener::<PointerEvent>(inner, canvas, "pointerup", None, |inner, event| {
@@ -822,13 +865,20 @@ fn setup_event_listeners(inner: &Rc<WebWindowInner>) {
     let Some(window) = web_sys::window() else {
         return;
     };
-    let window_target: &web_sys::EventTarget = window.as_ref();
 
-    add_listener::<KeyboardEvent>(inner, window_target, "keydown", None, |inner, event| {
+    // Every keyboard-related listener goes on this window's own hidden input
+    // rather than on the page: focus lives there, key events start there, and
+    // a page with several gpui windows must not deliver one keystroke to all
+    // of them.
+    let ime_target: &web_sys::EventTarget = inner.ime_input.as_ref();
+
+    add_listener::<KeyboardEvent>(inner, ime_target, "keydown", None, |inner, event| {
         // During IME composition the composition events carry the text; the
-        // interleaved synthetic key events (keyCode 229) must not dispatch.
-        // A dead key ("Dead") starts a composition of its own.
-        if event.is_composing() || event.key() == "Dead" {
+        // interleaved synthetic key events must not dispatch. `isComposing`
+        // is false on the keydown that *starts* a composition, which is what
+        // the keyCode 229 sentinel is for. A dead key ("Dead") starts a
+        // composition of its own.
+        if event.is_composing() || event.key_code() == 229 || event.key() == "Dead" {
             return;
         }
         let modifiers = keyboard_event_modifiers(&event);
@@ -868,16 +918,27 @@ fn setup_event_listeners(inner: &Rc<WebWindowInner>) {
         }
 
         let result = inner.dispatch_input(PlatformInput::KeyDown(KeyDownEvent {
-            keystroke,
+            keystroke: keystroke.clone(),
             is_held: event.repeat(),
         }));
         if result.default_prevented {
             event.prevent_default();
         }
+        // gpui did not bind the key, so it is text: hand the character to the
+        // window's input handler, the way every other backend does. Anything
+        // beyond shift is a chord, not typing.
+        if result.propagate
+            && keystroke.modifiers.is_subset_of(&Modifiers::shift())
+            && let Some(key_char) = keystroke.key_char.as_ref()
+        {
+            inner.with_input_handler(|handler| {
+                handler.replace_text_in_range(None, key_char);
+            });
+        }
     });
 
-    add_listener::<KeyboardEvent>(inner, window_target, "keyup", None, |inner, event| {
-        if event.is_composing() || event.key() == "Dead" {
+    add_listener::<KeyboardEvent>(inner, ime_target, "keyup", None, |inner, event| {
+        if event.is_composing() || event.key_code() == 229 || event.key() == "Dead" {
             return;
         }
         let modifiers = keyboard_event_modifiers(&event);
@@ -904,7 +965,7 @@ fn setup_event_listeners(inner: &Rc<WebWindowInner>) {
         }
     });
 
-    add_listener::<web_sys::ClipboardEvent>(inner, window_target, "paste", None, |inner, event| {
+    add_listener::<web_sys::ClipboardEvent>(inner, ime_target, "paste", None, |inner, event| {
         // Within this event the external clipboard is synchronously
         // readable; refresh the mirror before letting gpui act.
         if let Some(data) = event.clipboard_data() {
@@ -921,16 +982,21 @@ fn setup_event_listeners(inner: &Rc<WebWindowInner>) {
         }
     });
 
-    let ime_target: &web_sys::EventTarget = inner.ime_input.as_ref();
+    add_listener::<CompositionEvent>(inner, ime_target, "compositionstart", None, |inner, _| {
+        inner.composing.set(true);
+        inner.place_ime_input_at_caret();
+    });
 
     add_listener::<CompositionEvent>(inner, ime_target, "compositionupdate", None, |inner, event| {
         let text = event.data().unwrap_or_default();
         inner.with_input_handler(|handler| {
             handler.replace_and_mark_text_in_range(None, &text, None);
         });
+        inner.place_ime_input_at_caret();
     });
 
     add_listener::<CompositionEvent>(inner, ime_target, "compositionend", None, |inner, event| {
+        inner.composing.set(false);
         let text = event.data().unwrap_or_default();
         inner.with_input_handler(|handler| {
             if text.is_empty() {
@@ -944,7 +1010,18 @@ fn setup_event_listeners(inner: &Rc<WebWindowInner>) {
         inner.ime_input.set_value("");
     });
 
-    add_listener::<web_sys::Event>(inner, window_target, "focus", None, |inner, _event| {
+    // Outside composition the hidden input is not a text field, just the
+    // event target gpui borrows to see key and IME events: anything the
+    // browser types into it is a duplicate of what gpui already holds, and
+    // letting it pile up would grow without bound and give the IME a bogus
+    // idea of the surrounding text.
+    add_listener::<web_sys::Event>(inner, ime_target, "input", None, |inner, _event| {
+        if !inner.composing.get() {
+            inner.ime_input.set_value("");
+        }
+    });
+
+    add_listener::<web_sys::Event>(inner, ime_target, "focus", None, |inner, _event| {
         inner.active.set(true);
         let mut callback = inner.callbacks.active_status_change.borrow_mut().take();
         if let Some(callback) = callback.as_mut() {
@@ -953,7 +1030,7 @@ fn setup_event_listeners(inner: &Rc<WebWindowInner>) {
         replace_if_empty(&inner.callbacks.active_status_change, callback);
     });
 
-    add_listener::<web_sys::Event>(inner, window_target, "blur", None, |inner, _event| {
+    add_listener::<web_sys::Event>(inner, ime_target, "blur", None, |inner, _event| {
         inner.active.set(false);
         let mut callback = inner.callbacks.active_status_change.borrow_mut().take();
         if let Some(callback) = callback.as_mut() {
@@ -1153,12 +1230,6 @@ impl PlatformWindow for WebWindow {
 
     fn update_ime_position(&self, bounds: Bounds<Pixels>) {
         // The IME popup anchors to the hidden input, so park it at the caret.
-        let style = self.0.ime_input.style();
-        style
-            .set_property("left", &format!("{}px", bounds.origin.x.0))
-            .ok();
-        style
-            .set_property("top", &format!("{}px", bounds.origin.y.0))
-            .ok();
+        self.0.place_ime_input(bounds.origin);
     }
 }

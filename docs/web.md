@@ -9,8 +9,12 @@ driven by `requestAnimationFrame`.
 
 Smoke-tested in Chrome 151 and Firefox 148 (macOS, Apple M4): rendering,
 text, mouse input, resize, dark-mode tracking, and a 3-minute soak at a
-solid 60fps with no leaks or GPU errors. Safari and the newest additions
-below (pinch, external paste, IME) have not had a browser pass yet.
+solid 60fps with no leaks or GPU errors. Pinch (the ctrl+wheel path),
+typing, dead keys, IME composition, external clipboard paste and
+multi-canvas windows have since had a Chrome 151 pass of their own, driven
+through the DevTools protocol against `examples/input_web.rs` and
+`examples/multi_window_web.rs`. Safari -- and with it the GestureEvent
+pinch path, which no other browser fires -- has still not been tried.
 
 Working:
 
@@ -28,7 +32,9 @@ Working:
   counting), the scroll wheel (pixel and line deltas), keyboard events
   (modifier tracking, capslock, browser default suppressed exactly when
   gpui marks an event handled), hover and focus tracking. Right-click
-  reaches gpui; the browser context menu is suppressed.
+  reaches gpui; the browser context menu is suppressed. A key gpui leaves
+  unhandled is fed to the window's input handler as text, the same way the
+  desktop backends do it, so typing lands in text fields.
 - Dark mode: `prefers-color-scheme` is reflected in `window_appearance` and
   appearance-change callbacks.
 - Cursor styles (CSS cursors) and `open_url` (new tab; subject to the
@@ -48,16 +54,26 @@ Working:
   is synchronously readable -- can refresh the mirror first; if no paste
   event arrives within 100ms the keystroke is dispatched as-is. Pasting
   via a non-default keybinding therefore reads the mirror only.
-- **IME composition** (first cut, not yet browser-verified): an invisible
-  focused `<input>` receives composition events; compositionupdate marks
-  text via the window's input handler, compositionend commits it, and
-  `update_ime_position` parks the element at the caret so the IME popup
-  appears in the right place. Key events are suppressed while composing.
+- **IME composition**: an invisible `<input>` per window receives the
+  composition events; compositionupdate marks text via the window's input
+  handler and compositionend commits it. Key events are suppressed while
+  composing -- including the keydown that *starts* a composition, which
+  browsers flag with the keyCode 229 sentinel rather than `isComposing`.
+  The element is parked at the caret on every composition event (asking the
+  input handler where that is) so the candidate window appears in the right
+  place; `update_ime_position` moves it too, for applications that call
+  `Window::invalidate_character_coordinates`.
 - Windows are canvases. The first window claims `<canvas id="gpui">` if
   the page provides one (and it is unclaimed); every window otherwise
   gets its own full-viewport canvas appended to `<body>`, stacked in
   creation order. Device-pixel-ratio changes and canvas resizes are
-  picked up every frame.
+  picked up every frame. Each window also owns the hidden `<input>` that
+  its keyboard, composition and paste listeners hang off, so the window
+  holding the DOM focus -- the newest one, until a click on another
+  canvas moves it -- is the only one a keystroke reaches. Pointer events
+  are suppressed at the browser level so that focus stays put; a canvas
+  is not focusable, and the browser would otherwise hand the keyboard to
+  the document body, which listens for nothing.
 
 Not yet implemented:
 
@@ -105,6 +121,26 @@ context: `localhost` or https):
 python3 -m http.server -d examples/web 8000
 # open http://localhost:8000
 ```
+
+Two more examples cover the input paths that need a browser to exercise.
+`input_web` is a text editor with a keystroke log, the clipboard mirror's
+contents and a pinch readout -- the place to try typing, dead keys, an IME,
+ctrl/cmd-v and a trackpad pinch. `multi_window_web` opens two windows to
+show that each gets its own canvas. Each has its own page next to
+`index.html`:
+
+```sh
+for example in input_web multi_window_web; do
+    cargo build --target wasm32-unknown-unknown --example "$example" --release
+    wasm-bindgen --target web --out-dir "examples/web/pkg-$example" \
+        "target/wasm32-unknown-unknown/release/examples/$example.wasm"
+done
+# open http://localhost:8000/input_web.html
+```
+
+Watching what the backend does is much easier with logging on: both
+examples initialize `console_log`, and the browser console then shows every
+keystroke, composition step, pinch and clipboard read.
 
 ## Application structure on the web
 
