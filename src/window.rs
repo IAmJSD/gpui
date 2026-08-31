@@ -1734,7 +1734,13 @@ impl Window {
         if cfg!(any(
             target_os = "windows",
             target_os = "linux",
-            target_os = "freebsd"
+            target_os = "freebsd",
+            // On the web the window is a canvas inside a page: it can sit under
+            // the pointer while the page does not have keyboard focus, so the
+            // macOS "active implies hovered" shortcut would suppress cursor
+            // updates until the user clicks. The browser backend tracks real
+            // hover through pointerenter/pointerleave.
+            target_arch = "wasm32",
         )) {
             self.hovered.get()
         } else {
