@@ -104,17 +104,23 @@ impl PlatformAtlas for BladeAtlas {
     fn remove(&self, key: &AtlasKey) {
         let mut lock = self.0.lock();
 
-        let Some(id) = lock.tiles_by_key.remove(key).map(|tile| tile.texture_id) else {
+        let Some(tile) = lock.tiles_by_key.remove(key) else {
             return;
         };
+        let id = tile.texture_id;
 
         let Some(texture_slot) = lock.storage[id.kind].textures.get_mut(id.index as usize) else {
             return;
         };
 
         if let Some(mut texture) = texture_slot.take() {
+            texture.allocator.deallocate(tile.tile_id.into());
             texture.decrement_ref_count();
             if texture.is_unreferenced() {
+                // The texture may have been allocated this frame and not yet flushed;
+                // drop any work queued against it so `flush` doesn't touch a dead slot.
+                lock.initializations.retain(|init_id| *init_id != id);
+                lock.uploads.retain(|upload| upload.id != id);
                 lock.storage[id.kind]
                     .free_list
                     .push(texture.id.index as usize);
@@ -226,7 +232,10 @@ impl BladeAtlasState {
 
     fn flush_initializations(&mut self, encoder: &mut gpu::CommandEncoder) {
         for id in self.initializations.drain(..) {
-            let texture = &self.storage[id];
+            // The texture may have been removed since it was queued.
+            let Some(texture) = self.storage.get(id) else {
+                continue;
+            };
             encoder.init_texture(texture.raw);
         }
     }
@@ -236,7 +245,9 @@ impl BladeAtlasState {
 
         let mut transfers = encoder.transfer("atlas");
         for upload in self.uploads.drain(..) {
-            let texture = &self.storage[upload.id];
+            let Some(texture) = self.storage.get(upload.id) else {
+                continue;
+            };
             transfers.copy_buffer_to_texture(
                 upload.data,
                 upload.bounds.size.width.to_bytes(texture.bytes_per_pixel()),
@@ -297,6 +308,14 @@ impl ops::Index<AtlasTextureId> for BladeAtlasStorage {
 }
 
 impl BladeAtlasStorage {
+    fn get(&self, id: AtlasTextureId) -> Option<&BladeAtlasTexture> {
+        let textures = match id.kind {
+            crate::AtlasTextureKind::Monochrome => &self.monochrome_textures,
+            crate::AtlasTextureKind::Polychrome => &self.polychrome_textures,
+        };
+        textures.textures.get(id.index as usize)?.as_ref()
+    }
+
     fn destroy(&mut self, gpu: &gpu::Context) {
         for mut texture in self.monochrome_textures.drain().flatten() {
             texture.destroy(gpu);
