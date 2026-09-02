@@ -412,7 +412,46 @@ pub(crate) enum PendingActivation {
 #[derive(Clone)]
 pub struct WaylandClientStatePtr(Weak<RefCell<WaylandClientState>>);
 
+/// What a drag started by [`WaylandClientStatePtr::start_drag`] offers:
+/// one mime type and the bytes behind it, carried as the data source's
+/// user data so the `Send` request can be answered without any table
+/// of in-flight drags.
+pub(crate) struct DragSource {
+    mime: String,
+    bytes: Vec<u8>,
+}
+
 impl WaylandClientStatePtr {
+    /// Begin a drag-and-drop with `origin` as the source surface, offering
+    /// `bytes` as `mime`. Only a copy is offered — the recipient may not
+    /// move anything. Needs a mouse button held: the compositor accepts
+    /// the drag on the strength of the last button-press serial, and
+    /// ignores it otherwise. Returns whether the request went out.
+    pub fn start_drag(&self, origin: &wl_surface::WlSurface, mime: &str, bytes: Vec<u8>) -> bool {
+        let client = self.get_client();
+        let state = client.borrow();
+        let (Some(data_device_manager), Some(data_device)) = (
+            state.globals.data_device_manager.clone(),
+            state.data_device.clone(),
+        ) else {
+            return false;
+        };
+        let serial = state.serial_tracker.get(SerialKind::MousePress);
+        let source = data_device_manager.create_data_source(
+            &state.globals.qh,
+            DragSource {
+                mime: mime.to_string(),
+                bytes,
+            },
+        );
+        source.offer(mime.to_string());
+        if source.version() >= 3 {
+            source.set_actions(DndAction::Copy);
+        }
+        data_device.start_drag(Some(&source), origin, None, serial);
+        true
+    }
+
     pub fn get_client(&self) -> Rc<RefCell<WaylandClientState>> {
         self.0
             .upgrade()
@@ -2598,6 +2637,33 @@ impl Dispatch<wl_data_offer::WlDataOffer, ()> for WaylandClientStatePtr {
             {
                 offer.add_mime_type(mime_type);
             }
+        }
+    }
+}
+
+impl Dispatch<wl_data_source::WlDataSource, DragSource> for WaylandClientStatePtr {
+    fn event(
+        this: &mut Self,
+        data_source: &wl_data_source::WlDataSource,
+        event: wl_data_source::Event,
+        drag: &DragSource,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let client = this.get_client();
+        let state = client.borrow();
+        match event {
+            wl_data_source::Event::Send { mime_type, fd } if mime_type == drag.mime => {
+                state.clipboard.send_bytes(fd, drag.bytes.clone());
+            }
+            // Anything else asked for gets nothing: the pipe closes
+            // when `fd` drops here, which the recipient reads as an
+            // empty answer.
+            wl_data_source::Event::Send { .. } => {}
+            wl_data_source::Event::Cancelled | wl_data_source::Event::DndFinished => {
+                data_source.destroy();
+            }
+            _ => {}
         }
     }
 }

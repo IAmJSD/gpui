@@ -1765,6 +1765,15 @@ impl Window {
         self.platform_window.start_window_move()
     }
 
+    /// Hand a drag to the platform, with this window as its source:
+    /// `bytes` offered as `mime`, as a copy. Call it from a mouse handler
+    /// with the button still down — that is the only moment a compositor
+    /// will begin one. Returns whether the platform took it (Wayland);
+    /// `false` everywhere else, leaving any internal drag as it was.
+    pub fn start_native_drag(&self, mime: &str, bytes: Vec<u8>) -> bool {
+        self.platform_window.start_native_drag(mime, bytes)
+    }
+
     /// When using client side decorations, set this to the width of the invisible decorations (Wayland and X11)
     pub fn set_client_inset(&mut self, inset: Pixels) {
         self.client_inset = Some(inset);

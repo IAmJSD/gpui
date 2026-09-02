@@ -564,6 +564,12 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn request_decorations(&self, _decorations: WindowDecorations) {}
     fn show_window_menu(&self, _position: Point<Pixels>) {}
     fn start_window_move(&self) {}
+    /// Begin a platform drag-and-drop with this window as the source,
+    /// offering `bytes` as `mime`, copy only. `false` where the platform
+    /// has no such thing (or refuses): the caller keeps its own drag.
+    fn start_native_drag(&self, _mime: &str, _bytes: Vec<u8>) -> bool {
+        false
+    }
     fn start_window_resize(&self, _edge: ResizeEdge) {}
     fn window_decorations(&self) -> Decorations {
         Decorations::Server

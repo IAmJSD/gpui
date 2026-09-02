@@ -1049,6 +1049,11 @@ impl PlatformWindow for WaylandWindow {
         state.toplevel._move(&state.globals.seat, serial);
     }
 
+    fn start_native_drag(&self, mime: &str, bytes: Vec<u8>) -> bool {
+        let state = self.borrow();
+        state.client.start_drag(&state.surface, mime, bytes)
+    }
+
     fn start_window_resize(&self, edge: crate::ResizeEdge) {
         let state = self.borrow();
         state.toplevel.resize(
