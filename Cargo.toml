@@ -236,6 +236,10 @@ path = "examples/window_positioning.rs"
 name = "window_shadow"
 path = "examples/window_shadow.rs"
 
+[[example]]
+name = "mobile"
+path = "examples/mobile.rs"
+
 [[test]]
 name = "action_macros"
 path = "tests/action_macros.rs"
@@ -686,7 +690,7 @@ optional = true
 version = "25.0"
 features = ["wgsl-in"]
 
-[target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos", target_arch = "wasm32"))'.dependencies.pathfinder_geometry]
+[target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos", target_os = "ios", target_arch = "wasm32"))'.dependencies.pathfinder_geometry]
 version = "0.5"
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "windows"))'.dependencies.scap]
@@ -752,6 +756,49 @@ optional = true
 [target.'cfg(target_os = "macos")'.dependencies.objc2-metal]
 version = "0.3"
 optional = true
+
+[target.'cfg(target_os = "ios")'.dependencies.block]
+version = "0.1"
+
+[target.'cfg(target_os = "ios")'.dependencies.core-foundation]
+version = "=0.10.0"
+
+[target.'cfg(target_os = "ios")'.dependencies.core-foundation-sys]
+version = "0.8.6"
+
+[target.'cfg(target_os = "ios")'.dependencies.core-graphics]
+version = "0.24"
+
+[target.'cfg(target_os = "ios")'.dependencies.core-text]
+version = "21"
+
+[target.'cfg(target_os = "ios")'.dependencies.font-kit]
+version = "0.14.1-zed"
+optional = true
+package = "zed-font-kit"
+
+[target.'cfg(target_os = "ios")'.dependencies.foreign-types]
+version = "0.5"
+
+[target.'cfg(target_os = "ios")'.dependencies.log]
+version = "0.4.16"
+features = [
+    "kv_unstable_serde",
+    "serde",
+]
+
+[target.'cfg(target_os = "ios")'.dependencies.metal]
+version = "0.29"
+
+[target.'cfg(target_os = "ios")'.dependencies.objc]
+version = "0.2"
+
+[target.'cfg(target_os = "ios")'.build-dependencies.bindgen]
+version = "0.71"
+
+[target.'cfg(target_os = "ios")'.build-dependencies.cbindgen]
+version = "0.28.0"
+default-features = false
 
 [target.'cfg(target_os = "macos")'.build-dependencies.bindgen]
 version = "0.71"

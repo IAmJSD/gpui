@@ -1758,6 +1758,24 @@ impl Window {
         self.platform_window.show_window_menu(position)
     }
 
+    /// The edges of the window's content that system UI covers: the status
+    /// bar, display cutouts, the home indicator and the software keyboard
+    /// on iOS. Zero on desktop platforms. Pad the root element by these to
+    /// keep content visible; they change when the keyboard shows, which
+    /// triggers a relayout.
+    pub fn safe_area_insets(&self) -> Edges<Pixels> {
+        self.platform_window.safe_area_insets()
+    }
+
+    /// Shows a native context menu for `items` at `position`, in the
+    /// window's coordinates. On iOS this is an action sheet (iPhone) or an
+    /// anchored popover (iPad); the chosen item's action is dispatched the
+    /// way an app-menu action is. Returns `false` where no native menu is
+    /// available, so the caller can render its own instead.
+    pub fn show_context_menu(&self, position: Point<Pixels>, items: Vec<crate::MenuItem>) -> bool {
+        self.platform_window.show_context_menu(position, items)
+    }
+
     /// Tells the compositor to take control of window movement (Wayland and X11)
     ///
     /// Events may not be received during a move operation.

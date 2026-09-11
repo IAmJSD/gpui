@@ -86,6 +86,21 @@ and documented. See [docs/web.md](docs/web.md) for the status table, build
 steps, and three browser examples (`hello_web`, `input_web`,
 `multi_window_web`).
 
+## Running on iOS and iPadOS
+
+This fork also builds for `aarch64-apple-ios` and the Simulator targets.
+UIKit hosts the app, the Metal renderer and CoreText text system are shared
+with macOS, and touch is mapped onto gpui's mouse model: taps click, drags
+scroll with momentum, a long press is a right click (or the system edit
+menu over a text field), pinches are `PinchEvent`s, and iPad pointers are
+real mice. The software keyboard drives gpui text fields through
+`UITextInput`; `Window::safe_area_insets()` reports what system UI covers.
+App menus set with `App::set_menus` become the iPadOS menu bar and
+hardware-keyboard shortcuts, and `Window::show_context_menu` shows a native
+action sheet or popover. See [docs/ios.md](docs/ios.md) for the status,
+build steps and `examples/ios/run-simulator.sh`, which runs any example in
+the Simulator (`examples/mobile.rs` exercises the touch and menu paths).
+
 ## Pinch gestures
 
 This fork adds a `PinchEvent` alongside `ScrollWheelEvent`, so trackpad
@@ -118,6 +133,7 @@ to the element under the centroid.
 | Platform | Status | Mechanism |
 | --- | --- | --- |
 | macOS | Supported | `magnifyWithEvent:` / `NSEventTypeMagnify` |
+| iOS/iPadOS | Supported | `UIPinchGestureRecognizer`; trackpad pinches on iPad arrive the same way |
 | Linux/Wayland | Supported | `zwp_pointer_gestures_v1` pinch, when the compositor advertises it |
 | Linux/X11 | Supported | XI 2.4 gesture events (xorg-server 21.1+, libinput); older servers deliver nothing |
 | Windows | Touchscreen; touchpad opt-in | `WM_GESTURE` / `GID_ZOOM`; precision touchpads need Direct Manipulation, see below |

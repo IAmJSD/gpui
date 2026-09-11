@@ -8,6 +8,9 @@ mod linux;
 #[cfg(target_os = "macos")]
 mod mac;
 
+#[cfg(target_os = "ios")]
+mod ios;
+
 #[cfg(any(
     all(
         any(target_os = "linux", target_os = "freebsd"),
@@ -51,11 +54,11 @@ pub(crate) mod scap_screen_capture;
 
 use crate::{
     Action, AnyWindowHandle, App, AsyncWindowContext, BackgroundExecutor, Bounds,
-    DEFAULT_WINDOW_SIZE, DevicePixels, DispatchEventResult, Font, FontId, FontMetrics, FontRun,
-    ForegroundExecutor, GlyphId, GpuSpecs, ImageSource, Keymap, LineLayout, Pixels, PlatformInput,
-    Point, RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams, Scene, ShapedGlyph,
-    ShapedRun, SharedString, Size, SvgRenderer, SvgSize, SystemWindowTab, Task, TaskLabel, Window,
-    WindowControlArea, hash, point, px, size,
+    DEFAULT_WINDOW_SIZE, DevicePixels, DispatchEventResult, Edges, Font, FontId, FontMetrics,
+    FontRun, ForegroundExecutor, GlyphId, GpuSpecs, ImageSource, Keymap, LineLayout, Pixels,
+    PlatformInput, Point, RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams,
+    Scene, ShapedGlyph, ShapedRun, SharedString, Size, SvgRenderer, SvgSize, SystemWindowTab, Task,
+    TaskLabel, Window, WindowControlArea, hash, point, px, size,
 };
 use anyhow::Result;
 use async_task::Runnable;
@@ -95,6 +98,8 @@ pub use keystroke::*;
     target_arch = "wasm32"
 ))]
 pub(crate) use cosmic_text_system::*;
+#[cfg(target_os = "ios")]
+pub(crate) use ios::*;
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 pub(crate) use linux::*;
 #[cfg(target_os = "macos")]
@@ -118,6 +123,11 @@ pub fn background_executor() -> BackgroundExecutor {
 #[cfg(target_os = "macos")]
 pub(crate) fn current_platform(headless: bool) -> Rc<dyn Platform> {
     Rc::new(MacPlatform::new(headless))
+}
+
+#[cfg(target_os = "ios")]
+pub(crate) fn current_platform(headless: bool) -> Rc<dyn Platform> {
+    Rc::new(IosPlatform::new(headless))
 }
 
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
@@ -583,6 +593,20 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     }
     fn set_client_inset(&self, _inset: Pixels) {}
     fn gpu_specs(&self) -> Option<GpuSpecs>;
+
+    /// The edges of the content area covered by system UI: the status bar,
+    /// display cutouts, the home indicator and the software keyboard.
+    /// Zero on desktops.
+    fn safe_area_insets(&self) -> Edges<Pixels> {
+        Edges::default()
+    }
+
+    /// Shows a native context menu for `items` at `position`. The chosen
+    /// item's action is dispatched like an app-menu action. Returns whether
+    /// the platform showed one; when it did not, the caller draws its own.
+    fn show_context_menu(&self, _position: Point<Pixels>, _items: Vec<MenuItem>) -> bool {
+        false
+    }
 
     fn update_ime_position(&self, _bounds: Bounds<Pixels>);
 
@@ -1203,29 +1227,47 @@ pub(crate) struct WindowParams {
     pub kind: WindowKind,
 
     /// Whether the window should be movable by the user
-    #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(dead_code))]
+    #[cfg_attr(
+        any(target_os = "linux", target_os = "freebsd", target_os = "ios"),
+        allow(dead_code)
+    )]
     pub is_movable: bool,
 
     /// Whether the window should be resizable by the user
-    #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(dead_code))]
+    #[cfg_attr(
+        any(target_os = "linux", target_os = "freebsd", target_os = "ios"),
+        allow(dead_code)
+    )]
     pub is_resizable: bool,
 
     /// Whether the window should be minimized by the user
-    #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(dead_code))]
+    #[cfg_attr(
+        any(target_os = "linux", target_os = "freebsd", target_os = "ios"),
+        allow(dead_code)
+    )]
     pub is_minimizable: bool,
 
     #[cfg_attr(
-        any(target_os = "linux", target_os = "freebsd", target_os = "windows"),
+        any(
+            target_os = "linux",
+            target_os = "freebsd",
+            target_os = "windows",
+            target_os = "ios"
+        ),
         allow(dead_code)
     )]
     pub focus: bool,
 
-    #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(dead_code))]
+    #[cfg_attr(
+        any(target_os = "linux", target_os = "freebsd", target_os = "ios"),
+        allow(dead_code)
+    )]
     pub show: bool,
 
-    #[cfg_attr(feature = "wayland", allow(dead_code))]
+    #[cfg_attr(any(feature = "wayland", target_os = "ios"), allow(dead_code))]
     pub display_id: Option<DisplayId>,
 
+    #[cfg_attr(target_os = "ios", allow(dead_code))]
     pub window_min_size: Option<Size<Pixels>>,
     #[cfg(target_os = "macos")]
     pub tabbing_identifier: Option<String>,

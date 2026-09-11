@@ -19,7 +19,14 @@ fn main() {
     match target.as_deref() {
         Ok("macos") => {
             #[cfg(target_os = "macos")]
-            macos::build();
+            macos::build(macos::AppleSdk::MacOs);
+        }
+        // iOS and iPadOS reuse the Metal renderer and the libdispatch
+        // bindings; only the SDK the shaders are compiled against differs.
+        // Cross-compiling for them needs a macOS host with Xcode.
+        Ok("ios") => {
+            #[cfg(target_os = "macos")]
+            macos::build(macos::AppleSdk::ios_for_target());
         }
         Ok("windows") => {
             #[cfg(target_os = "windows")]
@@ -63,8 +70,68 @@ mod macos {
 
     use cbindgen::Config;
 
-    pub(super) fn build() {
-        generate_dispatch_bindings();
+    /// Which Apple SDK the native pieces are built against.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub(super) enum AppleSdk {
+        MacOs,
+        IPhoneOs,
+        IPhoneSimulator,
+    }
+
+    impl AppleSdk {
+        /// The iOS SDK matching the current cargo target: the simulator
+        /// for `*-apple-ios-sim` and `x86_64-apple-ios`, the device SDK
+        /// otherwise.
+        pub(super) fn ios_for_target() -> Self {
+            let abi = env::var("CARGO_CFG_TARGET_ABI").unwrap_or_default();
+            let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+            if abi == "sim" || arch == "x86_64" {
+                AppleSdk::IPhoneSimulator
+            } else {
+                AppleSdk::IPhoneOs
+            }
+        }
+
+        fn xcrun_name(self) -> &'static str {
+            match self {
+                AppleSdk::MacOs => "macosx",
+                AppleSdk::IPhoneOs => "iphoneos",
+                AppleSdk::IPhoneSimulator => "iphonesimulator",
+            }
+        }
+
+        fn min_version_flag(self) -> &'static str {
+            match self {
+                AppleSdk::MacOs => "-mmacosx-version-min=10.15.7",
+                AppleSdk::IPhoneOs => "-miphoneos-version-min=16.0",
+                AppleSdk::IPhoneSimulator => "-mios-simulator-version-min=16.0",
+            }
+        }
+
+        /// The clang target triple for the SDK, for tools (bindgen) that do
+        /// not take an `-sdk` argument.
+        fn clang_target(self) -> &'static str {
+            match self {
+                AppleSdk::MacOs => "arm64-apple-macosx10.15.7",
+                AppleSdk::IPhoneOs => "arm64-apple-ios16.0",
+                AppleSdk::IPhoneSimulator => "arm64-apple-ios16.0-simulator",
+            }
+        }
+
+        fn sysroot(self) -> Option<String> {
+            let output = std::process::Command::new("xcrun")
+                .args(["-sdk", self.xcrun_name(), "--show-sdk-path"])
+                .output()
+                .ok()?;
+            if !output.status.success() {
+                return None;
+            }
+            Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        }
+    }
+
+    pub(super) fn build(sdk: AppleSdk) {
+        generate_dispatch_bindings(sdk);
         #[cfg(not(feature = "macos-blade"))]
         {
             let header_path = generate_shader_bindings();
@@ -72,14 +139,31 @@ mod macos {
             #[cfg(feature = "runtime_shaders")]
             emit_stitched_shaders(&header_path);
             #[cfg(not(feature = "runtime_shaders"))]
-            compile_metal_shaders(&header_path);
+            compile_metal_shaders(&header_path, sdk);
         }
     }
 
-    fn generate_dispatch_bindings() {
-        println!("cargo:rustc-link-lib=framework=System");
+    fn generate_dispatch_bindings(sdk: AppleSdk) {
+        // libdispatch lives in System.framework on macOS and in libSystem,
+        // linked by default, on iOS.
+        if sdk == AppleSdk::MacOs {
+            println!("cargo:rustc-link-lib=framework=System");
+        }
 
-        let bindings = bindgen::Builder::default()
+        let mut builder = bindgen::Builder::default();
+        if sdk != AppleSdk::MacOs {
+            // bindgen derives its clang target from the cargo target, which
+            // for the simulator is not a triple clang understands, and the
+            // host's default sysroot is the macOS SDK. Point clang at the
+            // right SDK explicitly; the libdispatch API is identical on all
+            // of them so the generated bindings are too.
+            builder = builder.clang_arg(format!("--target={}", sdk.clang_target()));
+            if let Some(sysroot) = sdk.sysroot() {
+                builder = builder.clang_arg("-isysroot").clang_arg(sysroot);
+            }
+        }
+
+        let bindings = builder
             .header("src/platform/mac/dispatch.h")
             .allowlist_var("_dispatch_main_q")
             .allowlist_var("_dispatch_source_type_data_add")
@@ -193,7 +277,7 @@ mod macos {
     }
 
     #[cfg(not(feature = "runtime_shaders"))]
-    fn compile_metal_shaders(header_path: &Path) {
+    fn compile_metal_shaders(header_path: &Path, sdk: AppleSdk) {
         use std::process::{self, Command};
         let shader_path = "./src/platform/mac/shaders.metal";
         let air_output_path = PathBuf::from(env::var("OUT_DIR").unwrap()).join("shaders.air");
@@ -204,10 +288,10 @@ mod macos {
         let output = Command::new("xcrun")
             .args([
                 "-sdk",
-                "macosx",
+                sdk.xcrun_name(),
                 "metal",
                 "-gline-tables-only",
-                "-mmacosx-version-min=10.15.7",
+                sdk.min_version_flag(),
                 "-MO",
                 "-c",
                 shader_path,
@@ -228,7 +312,7 @@ mod macos {
         }
 
         let output = Command::new("xcrun")
-            .args(["-sdk", "macosx", "metallib"])
+            .args(["-sdk", sdk.xcrun_name(), "metallib"])
             .arg(air_output_path)
             .arg("-o")
             .arg(metallib_output_path)

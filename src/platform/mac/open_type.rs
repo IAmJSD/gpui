@@ -1,7 +1,6 @@
 #![allow(unused, non_upper_case_globals)]
 
 use crate::{FontFallbacks, FontFeatures};
-use cocoa::appkit::CGFloat;
 use core_foundation::{
     array::{
         CFArray, CFArrayAppendArray, CFArrayAppendValue, CFArrayCreateMutable, CFArrayGetCount,
@@ -9,13 +8,15 @@ use core_foundation::{
     },
     base::{CFRelease, TCFType, kCFAllocatorDefault},
     dictionary::{
-        CFDictionaryCreate, kCFTypeDictionaryKeyCallBacks, kCFTypeDictionaryValueCallBacks,
+        CFDictionary, CFDictionaryCreate, kCFTypeDictionaryKeyCallBacks,
+        kCFTypeDictionaryValueCallBacks,
     },
     number::CFNumber,
     string::{CFString, CFStringRef},
 };
 use core_foundation_sys::locale::CFLocaleCopyPreferredLanguages;
-use core_graphics::{display::CFDictionary, geometry::CGAffineTransform};
+use core_graphics::base::CGFloat;
+use core_graphics::geometry::CGAffineTransform;
 use core_text::{
     font::{CTFont, CTFontRef, cascade_list_for_languages},
     font_descriptor::{

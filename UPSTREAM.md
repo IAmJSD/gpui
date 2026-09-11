@@ -49,6 +49,17 @@ on every platform -- and those literals are spread across `platform/mac`,
 little. This bit us once already: the pressure field landed with `mac` only
 half-updated and `windows` not at all.
 
+iOS shares the Metal renderer, the CoreText text system and the libdispatch
+dispatcher with macOS by `#[path]`-including them from `platform/mac`, so a
+change to those files needs both Apple targets checked. From a macOS host
+with Xcode:
+
+```sh
+rustup target add aarch64-apple-ios-sim aarch64-apple-ios
+cargo check --target aarch64-apple-ios-sim
+cargo check --target aarch64-apple-ios
+```
+
 Windows can be type-checked from Linux. `cargo check` never links, so the
 only obstacle is a couple of dependencies with C build scripts, and those
 only need to *succeed*:

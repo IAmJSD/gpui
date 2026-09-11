@@ -1,4 +1,9 @@
+// The surface pipeline is compiled but never used on iOS; see `draw_surfaces`.
+#![cfg_attr(target_os = "ios", allow(dead_code, unused_imports))]
+
 use super::metal_atlas::MetalAtlas;
+#[cfg(target_os = "ios")]
+use crate::platform::ios::cocoa_shim::{AutoresizingMask, NO, NSSize, NSUInteger, YES};
 use crate::{
     AtlasTextureId, Background, Bounds, ContentMask, DevicePixels, MonochromeSprite, PaintSurface,
     Path, Point, PolychromeSprite, PrimitiveBatch, Quad, ScaledPixels, Scene, Shadow, Size,
@@ -6,13 +11,18 @@ use crate::{
 };
 use anyhow::Result;
 use block::ConcreteBlock;
+#[cfg(target_os = "macos")]
 use cocoa::{
     base::{NO, YES},
     foundation::{NSSize, NSUInteger},
     quartzcore::AutoresizingMask,
 };
 
+// Video surfaces (`Window::paint_surface`) are macOS-only: the core-video
+// crate's dependency chain links OpenGL.framework, which iOS lacks.
+#[cfg(target_os = "macos")]
 use core_foundation::base::TCFType;
+#[cfg(target_os = "macos")]
 use core_video::{
     metal_texture::CVMetalTextureGetTexture, metal_texture_cache::CVMetalTextureCache,
     pixel_buffer::kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
@@ -34,6 +44,14 @@ pub(crate) type PointF = crate::Point<f32>;
 const SHADERS_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shaders.metallib"));
 #[cfg(feature = "runtime_shaders")]
 const SHADERS_SOURCE_FILE: &str = include_str!(concat!(env!("OUT_DIR"), "/stitched_shaders.metal"));
+/// CPU-written buffers are managed on macOS (with an explicit flush after
+/// each frame) and shared on iOS, which has unified memory and no managed
+/// mode.
+#[cfg(target_os = "macos")]
+const CPU_BUFFER_STORAGE: MTLResourceOptions = MTLResourceOptions::StorageModeManaged;
+#[cfg(not(target_os = "macos"))]
+const CPU_BUFFER_STORAGE: MTLResourceOptions = MTLResourceOptions::StorageModeShared;
+
 // Use 4x MSAA, all devices support it.
 // https://developer.apple.com/documentation/metal/mtldevice/1433355-supportstexturesamplecount
 const PATH_SAMPLE_COUNT: u32 = 4;
@@ -77,12 +95,10 @@ impl InstanceBufferPool {
     }
 
     pub(crate) fn acquire(&mut self, device: &metal::Device) -> InstanceBuffer {
-        let buffer = self.buffers.pop().unwrap_or_else(|| {
-            device.new_buffer(
-                self.buffer_size as u64,
-                MTLResourceOptions::StorageModeManaged,
-            )
-        });
+        let buffer = self
+            .buffers
+            .pop()
+            .unwrap_or_else(|| device.new_buffer(self.buffer_size as u64, CPU_BUFFER_STORAGE));
         InstanceBuffer {
             metal_buffer: buffer,
             size: self.buffer_size,
@@ -113,6 +129,7 @@ pub(crate) struct MetalRenderer {
     #[allow(clippy::arc_with_non_send_sync)]
     instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
     sprite_atlas: Arc<MetalAtlas>,
+    #[cfg(target_os = "macos")]
     core_video_texture_cache: core_video::metal_texture_cache::CVMetalTextureCache,
     path_intermediate_texture: Option<metal::Texture>,
     path_intermediate_msaa_texture: Option<metal::Texture>,
@@ -180,7 +197,7 @@ impl MetalRenderer {
         let unit_vertices = device.new_buffer_with_data(
             unit_vertices.as_ptr() as *const c_void,
             mem::size_of_val(&unit_vertices) as u64,
-            MTLResourceOptions::StorageModeManaged,
+            CPU_BUFFER_STORAGE,
         );
 
         let paths_rasterization_pipeline_state = build_path_rasterization_pipeline_state(
@@ -251,6 +268,7 @@ impl MetalRenderer {
 
         let command_queue = device.new_command_queue();
         let sprite_atlas = Arc::new(MetalAtlas::new(device.clone()));
+        #[cfg(target_os = "macos")]
         let core_video_texture_cache =
             CVMetalTextureCache::new(None, device.clone(), None).unwrap();
 
@@ -270,6 +288,7 @@ impl MetalRenderer {
             unit_vertices,
             instance_buffer_pool,
             sprite_atlas,
+            #[cfg(target_os = "macos")]
             core_video_texture_cache,
             path_intermediate_texture: None,
             path_intermediate_msaa_texture: None,
@@ -289,6 +308,7 @@ impl MetalRenderer {
         &self.sprite_atlas
     }
 
+    #[cfg_attr(target_os = "ios", allow(dead_code))]
     pub fn set_presents_with_transaction(&mut self, presents_with_transaction: bool) {
         self.presents_with_transaction = presents_with_transaction;
         self.layer
@@ -342,6 +362,7 @@ impl MetalRenderer {
         }
     }
 
+    #[cfg_attr(target_os = "ios", allow(dead_code))]
     pub fn update_transparency(&self, _transparent: bool) {
         // todo(mac)?
     }
@@ -515,6 +536,7 @@ impl MetalRenderer {
                     viewport_size,
                     command_encoder,
                 ),
+                #[cfg(target_os = "macos")]
                 PrimitiveBatch::Surfaces(surfaces) => self.draw_surfaces(
                     surfaces,
                     instance_buffer,
@@ -522,6 +544,9 @@ impl MetalRenderer {
                     viewport_size,
                     command_encoder,
                 ),
+                // Nothing paints surfaces on iOS, so the batch is never built.
+                #[cfg(not(target_os = "macos"))]
+                PrimitiveBatch::Surfaces(_) => true,
             };
             if !ok {
                 command_encoder.end_encoding();
@@ -540,6 +565,7 @@ impl MetalRenderer {
 
         command_encoder.end_encoding();
 
+        #[cfg(target_os = "macos")]
         instance_buffer.metal_buffer.did_modify_range(NSRange {
             location: 0,
             length: instance_offset as NSUInteger,
@@ -1056,6 +1082,7 @@ impl MetalRenderer {
         true
     }
 
+    #[cfg(target_os = "macos")]
     fn draw_surfaces(
         &mut self,
         surfaces: &[PaintSurface],
