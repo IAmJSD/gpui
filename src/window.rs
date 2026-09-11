@@ -1767,6 +1767,15 @@ impl Window {
         self.platform_window.safe_area_insets()
     }
 
+    /// On a touch screen, a finger that moves after pressing scrolls by
+    /// default. Call this from a mouse-down handler to have that finger
+    /// drag instead: the element keeps receiving `MouseMove` events with
+    /// the button held, as it would from a mouse, and never a scroll. Two
+    /// fingers still scroll and pinch. Does nothing where input is a mouse.
+    pub fn claim_touch_drag(&self) {
+        self.platform_window.claim_touch_drag()
+    }
+
     /// Shows a native context menu for `items` at `position`, in the
     /// window's coordinates. On iOS this is an action sheet (iPhone) or an
     /// anchored popover (iPad); the chosen item's action is dispatched the

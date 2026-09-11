@@ -601,6 +601,10 @@ pub(crate) trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
         Edges::default()
     }
 
+    /// Makes the touch whose press is being dispatched drag instead of
+    /// scroll. No-op where input is a mouse.
+    fn claim_touch_drag(&self) {}
+
     /// Shows a native context menu for `items` at `position`. The chosen
     /// item's action is dispatched like an app-menu action. Returns whether
     /// the platform showed one; when it did not, the caller draws its own.

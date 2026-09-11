@@ -196,6 +196,16 @@ unsafe fn build_classes() {
                 handle_pointer_scroll as extern "C" fn(&Object, Sel, id),
             );
             decl.add_method(
+                sel!(handleTwoFingerPan:),
+                handle_two_finger_pan as extern "C" fn(&Object, Sel, id),
+            );
+            // UIGestureRecognizerDelegate: pinch and two-finger pan are the
+            // same two fingers and must both fire.
+            decl.add_method(
+                sel!(gestureRecognizer:shouldRecognizeSimultaneouslyWithGestureRecognizer:),
+                recognize_simultaneously as extern "C" fn(&Object, Sel, id, id) -> BOOL,
+            );
+            decl.add_method(
                 sel!(handleHover:),
                 handle_hover as extern "C" fn(&Object, Sel, id),
             );
@@ -385,6 +395,9 @@ unsafe fn build_classes() {
             );
 
             if let Some(protocol) = Protocol::get("UITextInput") {
+                decl.add_protocol(protocol);
+            }
+            if let Some(protocol) = Protocol::get("UIGestureRecognizerDelegate") {
                 decl.add_protocol(protocol);
             }
             decl.register()
@@ -1006,6 +1019,10 @@ impl PlatformWindow for IosWindow {
         self.0.lock().safe_area_insets()
     }
 
+    fn claim_touch_drag(&self) {
+        claim_touch_drag(&self.0);
+    }
+
     fn show_context_menu(&self, position: Point<Pixels>, items: Vec<MenuItem>) -> bool {
         let mut actions: Vec<Box<dyn crate::Action>> = Vec::new();
         let mut entries: Vec<(String, usize)> = Vec::new();
@@ -1159,6 +1176,21 @@ unsafe fn add_gesture_recognizers(view: id) {
         let _: () = msg_send![pan, setCancelsTouchesInView: NO];
         let _: () = msg_send![view, addGestureRecognizer: pan];
         let _: () = msg_send![pan, release];
+
+        // Two fingers dragging together scroll, whatever one finger does
+        // over the same element (a canvas that claims single-finger drags
+        // for painting still pans with two). Recognised alongside the
+        // pinch, which is the same two fingers.
+        let two_finger_pan: id = msg_send![class!(UIPanGestureRecognizer), alloc];
+        let two_finger_pan: id =
+            msg_send![two_finger_pan, initWithTarget: view action: sel!(handleTwoFingerPan:)];
+        let _: () = msg_send![two_finger_pan, setMinimumNumberOfTouches: 2usize];
+        let _: () = msg_send![two_finger_pan, setMaximumNumberOfTouches: 2usize];
+        let _: () = msg_send![two_finger_pan, setCancelsTouchesInView: NO];
+        let _: () = msg_send![two_finger_pan, setDelegate: view];
+        let _: () = msg_send![pinch, setDelegate: view];
+        let _: () = msg_send![view, addGestureRecognizer: two_finger_pan];
+        let _: () = msg_send![two_finger_pan, release];
 
         if let Some(hover_class) = Class::get("UIHoverGestureRecognizer") {
             let hover: id = msg_send![hover_class, alloc];
@@ -1517,19 +1549,61 @@ fn distance(a: Point<Pixels>, b: Point<Pixels>) -> f32 {
     (dx * dx + dy * dy).sqrt()
 }
 
-/// Releases the pending press without a click.
-fn cancel_press(state: &Arc<Mutex<IosWindowState>>, button: MouseButton) {
-    let modifiers = state.lock().modifiers;
+/// Releases a press that is not going to be a click. A press still
+/// undecided is released far outside the window, so nothing under it
+/// sees a click (as browsers cancel a pointer when a scroll takes it); a
+/// drag in progress is released where the finger last was, which is what
+/// a mouse would report and what a drag handler expects.
+fn cancel_press(state: &Arc<Mutex<IosWindowState>>, button: MouseButton, mode: TouchMode) {
+    let lock = state.lock();
+    let modifiers = lock.modifiers;
+    let position = match mode {
+        TouchMode::Drag => lock.mouse_position,
+        _ => CANCEL_POSITION,
+    };
+    drop(lock);
     send_event(
         state,
         PlatformInput::MouseUp(MouseUpEvent {
             button,
-            position: CANCEL_POSITION,
+            position,
             modifiers,
             click_count: 1,
             pressure: 1.0,
         }),
     );
+}
+
+/// Turns the press being dispatched into a drag, so the finger will not
+/// scroll. Only a press that has not moved yet can still be claimed.
+fn claim_touch_drag(state: &Arc<Mutex<IosWindowState>>) {
+    let mut lock = state.lock();
+    if let Some(primary) = lock.primary_touch.as_mut() {
+        if primary.mode == TouchMode::Undecided {
+            primary.mode = TouchMode::Drag;
+        }
+    }
+}
+
+/// Cancels the primary touch's press when a two-finger gesture takes
+/// over; returns without sending anything if there is none to cancel.
+fn cancel_primary_for_gesture(state: &Arc<Mutex<IosWindowState>>) {
+    let mut lock = state.lock();
+    lock.momentum = None;
+    let cancel = lock.primary_touch.as_mut().and_then(|primary| {
+        let button = primary.button;
+        let mode = primary.mode;
+        let needs_cancel = matches!(
+            mode,
+            TouchMode::Undecided | TouchMode::Drag | TouchMode::LongPressed
+        );
+        primary.mode = TouchMode::Cancelled;
+        needs_cancel.then_some((button, mode))
+    });
+    drop(lock);
+    if let Some((button, mode)) = cancel {
+        cancel_press(state, button, mode);
+    }
 }
 
 extern "C" fn touches_moved(this: &Object, _: Sel, touches: id, event: id) {
@@ -1575,7 +1649,7 @@ extern "C" fn touches_moved(this: &Object, _: Sel, touches: id, event: id) {
                     }
                     set_mode(&mut lock, TouchMode::Scroll);
                     drop(lock);
-                    cancel_press(&state, button);
+                    cancel_press(&state, button, TouchMode::Undecided);
                     send_event(
                         &state,
                         PlatformInput::ScrollWheel(ScrollWheelEvent {
@@ -1665,7 +1739,9 @@ fn finish_touch(this: &Object, touches: id, cancelled: bool) {
             drop(lock);
 
             match primary.mode {
-                TouchMode::Undecided if cancelled => cancel_press(&state, primary.button),
+                TouchMode::Undecided if cancelled => {
+                    cancel_press(&state, primary.button, TouchMode::Undecided)
+                }
                 TouchMode::Undecided | TouchMode::Drag => {
                     send_event(
                         &state,
@@ -1801,23 +1877,9 @@ extern "C" fn handle_pinch(this: &Object, _: Sel, recognizer: id) {
 
         let phase = match gesture_state {
             GESTURE_BEGAN => {
-                let mut lock = state.lock();
-                lock.pinch_last_scale = scale;
-                lock.momentum = None;
+                state.lock().pinch_last_scale = scale;
                 // The fingers are pinching, not pressing: cancel the press.
-                let cancel = lock.primary_touch.as_mut().and_then(|primary| {
-                    let button = primary.button;
-                    let needs_cancel = matches!(
-                        primary.mode,
-                        TouchMode::Undecided | TouchMode::Drag | TouchMode::LongPressed
-                    );
-                    primary.mode = TouchMode::Cancelled;
-                    needs_cancel.then_some(button)
-                });
-                drop(lock);
-                if let Some(button) = cancel {
-                    cancel_press(&state, button);
-                }
+                cancel_primary_for_gesture(&state);
                 TouchPhase::Started
             }
             GESTURE_CHANGED => TouchPhase::Moved,
@@ -1874,7 +1936,7 @@ extern "C" fn handle_long_press(this: &Object, _: Sel, recognizer: id) {
                 primary.mode = TouchMode::Cancelled;
             }
             drop(lock);
-            cancel_press(&state, button);
+            cancel_press(&state, button, TouchMode::Undecided);
             return;
         }
 
@@ -1882,7 +1944,7 @@ extern "C" fn handle_long_press(this: &Object, _: Sel, recognizer: id) {
             primary.mode = TouchMode::LongPressed;
         }
         drop(lock);
-        cancel_press(&state, button);
+        cancel_press(&state, button, TouchMode::Undecided);
         send_event(
             &state,
             PlatformInput::MouseDown(MouseDownEvent {
@@ -1962,6 +2024,46 @@ extern "C" fn handle_pointer_scroll(this: &Object, _: Sel, recognizer: id) {
         };
         let mut lock = state.lock();
         lock.momentum = None;
+        lock.mouse_position = position;
+        let modifiers = lock.modifiers;
+        drop(lock);
+        send_event(
+            &state,
+            PlatformInput::ScrollWheel(ScrollWheelEvent {
+                position,
+                delta: ScrollDelta::Pixels(point(
+                    px(translation.x as f32),
+                    px(translation.y as f32),
+                )),
+                modifiers,
+                touch_phase: phase,
+            }),
+        );
+    }
+}
+
+extern "C" fn recognize_simultaneously(_: &Object, _: Sel, _: id, _: id) -> BOOL {
+    YES
+}
+
+extern "C" fn handle_two_finger_pan(this: &Object, _: Sel, recognizer: id) {
+    let state = unsafe { get_window_state(this) };
+    unsafe {
+        let gesture_state: isize = msg_send![recognizer, state];
+        let location: NSPoint = msg_send![recognizer, locationInView: this];
+        let position: Point<Pixels> = location.into();
+        let translation: NSPoint = msg_send![recognizer, translationInView: this];
+        let _: () = msg_send![recognizer, setTranslation: NSPoint::default() inView: this];
+        let phase = match gesture_state {
+            GESTURE_BEGAN => {
+                cancel_primary_for_gesture(&state);
+                TouchPhase::Started
+            }
+            GESTURE_CHANGED => TouchPhase::Moved,
+            GESTURE_ENDED | GESTURE_CANCELLED => TouchPhase::Ended,
+            _ => return,
+        };
+        let mut lock = state.lock();
         lock.mouse_position = position;
         let modifiers = lock.modifiers;
         drop(lock);
