@@ -96,9 +96,18 @@ gpui's input is a mouse, so a finger becomes one:
 | Tap | Left `MouseDown` then `MouseUp` at the point; quick repeats raise `click_count` |
 | Drag past 8pt | The press is cancelled (a `MouseUp` far outside the window, as browsers cancel a pointer when they take a scroll) and `ScrollWheelEvent`s follow the finger; a fling keeps scrolling with UIScrollView's deceleration |
 | Long press (0.5s) | Right `MouseDown`/`MouseUp` at the point, or the system edit menu over a focused text field; moving the finger afterwards drags with the left button held, which is how iOS starts drags |
-| Two-finger pinch | `PinchEvent` with `Started`/`Moved`/`Ended` phases; any press in progress is cancelled |
+| Two-finger drag | `ScrollWheelEvent`s, whatever one finger does over the same element; any press in progress is cancelled |
+| Two-finger pinch | `PinchEvent` with `Started`/`Moved`/`Ended` phases, recognised alongside the two-finger drag; any press in progress is cancelled |
 | Apple Pencil | Left button with `pressure`; never scrolls |
 | iPad pointer | A real mouse: clicks and drags, `MouseMove` on hover, `ScrollWheel` for two-finger scrolling and mouse wheels, secondary button as right click |
+
+An element whose mouse-down handler calls `Window::claim_touch_drag()`
+keeps that finger as a drag: it gets `MouseMove`s with the button held and
+never a scroll, and a long press on it is a press, not a right click. That
+is what a canvas that paints with the mouse wants; lists and panels leave
+the default alone. A press that is cancelled for a scroll is released far
+outside the window, so nothing clicks; a claimed drag taken over by a
+two-finger gesture is released where the finger last was.
 
 The 8pt slop, 0.5s hold and the deceleration rate are constants at the top
 of `src/platform/ios/window.rs`.
