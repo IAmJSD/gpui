@@ -1060,7 +1060,7 @@ impl PlatformWindow for IosWindow {
         if !menu_has_rows(&items) {
             return false;
         }
-        present_menu_sheet(self.0.clone(), position, Arc::new(items), Vec::new());
+        present_menu_sheet(self.0.clone(), position, None, Arc::new(items), Vec::new());
         true
     }
 }
@@ -1074,9 +1074,10 @@ fn menu_has_rows(items: &[OwnedMenuItem]) -> bool {
     })
 }
 
-/// The trail of menus above the one showing, outermost first: each is
-/// the parent's name and its items, so a sheet can offer a row back.
-type MenuTrail = Vec<(String, Arc<Vec<OwnedMenuItem>>)>;
+/// The trail of menus above the one showing, outermost first: each is a
+/// menu's name (none for the root, whose caller never said) and its
+/// items, so a sheet can offer a row back to it.
+type MenuTrail = Vec<(Option<String>, Arc<Vec<OwnedMenuItem>>)>;
 
 /// One level of a native menu, as an action sheet (a popover anchored at
 /// `position` on iPad). A submenu is a row that opens the next sheet, and
@@ -1085,6 +1086,7 @@ type MenuTrail = Vec<(String, Arc<Vec<OwnedMenuItem>>)>;
 fn present_menu_sheet(
     state: Arc<Mutex<IosWindowState>>,
     position: Point<Pixels>,
+    name: Option<String>,
     items: Arc<Vec<OwnedMenuItem>>,
     parents: MenuTrail,
 ) {
@@ -1096,10 +1098,11 @@ fn present_menu_sheet(
 
     let present_later = Arc::new(
         move |state: Arc<Mutex<IosWindowState>>,
+              name: Option<String>,
               items: Arc<Vec<OwnedMenuItem>>,
               parents: MenuTrail| {
             executor
-                .spawn(async move { present_menu_sheet(state, position, items, parents) })
+                .spawn(async move { present_menu_sheet(state, position, name, items, parents) })
                 .detach();
         },
     );
@@ -1127,10 +1130,16 @@ fn present_menu_sheet(
             let present_later = present_later.clone();
             let mut grandparents = parents.clone();
             grandparents.pop();
+            let label = format!("\u{2039} {}", parent_name.as_deref().unwrap_or("Back"));
             add_action(
-                &format!("\u{2039} {parent_name}"),
+                &label,
                 Box::new(move || {
-                    present_later(state.clone(), parent_items.clone(), grandparents.clone())
+                    present_later(
+                        state.clone(),
+                        parent_name.clone(),
+                        parent_items.clone(),
+                        grandparents.clone(),
+                    )
                 }),
             );
         }
@@ -1155,12 +1164,18 @@ fn present_menu_sheet(
                     let state = state.clone();
                     let present_later = present_later.clone();
                     let children = Arc::new(menu.items.clone());
+                    let child_name = menu.name.to_string();
                     let mut trail = parents.clone();
-                    trail.push((menu.name.to_string(), items.clone()));
+                    trail.push((name.clone(), items.clone()));
                     add_action(
                         &format!("{} \u{203a}", menu.name),
                         Box::new(move || {
-                            present_later(state.clone(), children.clone(), trail.clone())
+                            present_later(
+                                state.clone(),
+                                Some(child_name.clone()),
+                                children.clone(),
+                                trail.clone(),
+                            )
                         }),
                     );
                 }
