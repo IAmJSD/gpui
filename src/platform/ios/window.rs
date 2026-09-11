@@ -140,6 +140,27 @@ unsafe fn build_classes() {
                 sel!(pressesCancelled:withEvent:),
                 window_presses_ended as extern "C" fn(&Object, Sel, id, id),
             );
+            // UIKit turns cmd-z/x/c/v/a and cmd-shift-z into these before
+            // any press is delivered, so they must be caught here to reach
+            // gpui at all.
+            decl.add_method(
+                sel!(canPerformAction:withSender:),
+                can_perform_action as extern "C" fn(&Object, Sel, Sel, id) -> BOOL,
+            );
+            for selector in standard_edit_selectors() {
+                decl.add_method(
+                    selector,
+                    perform_edit_action as extern "C" fn(&Object, Sel, id),
+                );
+            }
+            decl.add_method(
+                sel!(keyCommands),
+                reserved_key_commands as extern "C" fn(&Object, Sel) -> id,
+            );
+            decl.add_method(
+                sel!(handleGPUIReservedShortcut:),
+                handle_reserved_shortcut as extern "C" fn(&Object, Sel, id),
+            );
             decl.register()
         };
 
@@ -240,17 +261,26 @@ unsafe fn build_classes() {
                 application_will_enter_foreground as extern "C" fn(&Object, Sel, id),
             );
 
-            // Standard edit actions, so the system edit menu can drive gpui.
+            // Standard edit actions: the system edit menu's buttons, and
+            // the keyboard shortcuts UIKit reserves for them.
             decl.add_method(
                 sel!(canPerformAction:withSender:),
                 can_perform_action as extern "C" fn(&Object, Sel, Sel, id) -> BOOL,
             );
-            for selector in [sel!(cut:), sel!(copy:), sel!(paste:), sel!(selectAll:)] {
+            for selector in standard_edit_selectors() {
                 decl.add_method(
                     selector,
                     perform_edit_action as extern "C" fn(&Object, Sel, id),
                 );
             }
+            decl.add_method(
+                sel!(keyCommands),
+                reserved_key_commands as extern "C" fn(&Object, Sel) -> id,
+            );
+            decl.add_method(
+                sel!(handleGPUIReservedShortcut:),
+                handle_reserved_shortcut as extern "C" fn(&Object, Sel, id),
+            );
 
             // UIKeyInput
             decl.add_method(sel!(hasText), yes as extern "C" fn(&Object, Sel) -> BOOL);
@@ -493,6 +523,10 @@ struct IosWindowState {
     pinch_last_scale: f32,
     /// How much of the view the software keyboard covers, in points.
     keyboard_overlap: Pixels,
+    /// The last `UIPress` seen, by identity and timestamp. UIKit delivers
+    /// a press a second time when a priority key command matches it, and
+    /// the second copy must not become a second keystroke.
+    last_press: (usize, f64),
     last_appearance: WindowAppearance,
     title: String,
     /// Actions of the native context menu currently shown, if any.
@@ -647,6 +681,7 @@ impl IosWindow {
                 capslock: Capslock::default(),
                 pinch_last_scale: 1.0,
                 keyboard_overlap: px(0.),
+                last_press: (0, 0.0),
                 last_appearance: WindowAppearance::Light,
                 title: String::new(),
                 context_menu_actions: Vec::new(),
@@ -2145,6 +2180,14 @@ fn presses_began_impl(state: &Arc<Mutex<IosWindowState>>, presses: id) -> bool {
                 unhandled = true;
                 continue;
             }
+            let timestamp: f64 = msg_send![press, timestamp];
+            {
+                let mut lock = state.lock();
+                if lock.last_press == (press as usize, timestamp) {
+                    continue;
+                }
+                lock.last_press = (press as usize, timestamp);
+            }
             let flags: usize = msg_send![key, modifierFlags];
             update_modifiers(state, flags);
             let Some(keystroke) = keystroke_from_ui_key(key) else {
@@ -2254,25 +2297,130 @@ extern "C" fn window_presses_ended(this: &Object, _: Sel, presses: id, event: id
     }
 }
 
-/// Standard edit actions (the system edit menu, and `cut:` and friends
-/// arriving from the responder chain).
-extern "C" fn can_perform_action(this: &Object, _: Sel, action: Sel, _sender: id) -> BOOL {
-    let state = unsafe { get_window_state(this) };
-    if state.lock().input_handler.is_none() {
-        return NO;
-    }
-    let Some(platform) = platform() else {
-        return NO;
-    };
-    os_action_for_selector(action)
-        .is_some_and(|os_action| platform.can_perform_os_action(os_action))
-        .to_objc()
+/// The `UIResponderStandardEditActions` UIKit drives itself: from the
+/// system edit menu, and from the shortcuts it reserves for them, which
+/// never arrive as presses. Each is answered with the app's registered
+/// `OsAction` when there is one, and otherwise as the keystroke a desktop
+/// would have delivered, so the keymap gets its turn.
+fn standard_edit_selectors() -> [Sel; 6] {
+    [
+        sel!(cut:),
+        sel!(copy:),
+        sel!(paste:),
+        sel!(selectAll:),
+        sel!(undo:),
+        sel!(redo:),
+    ]
 }
 
-extern "C" fn perform_edit_action(_this: &Object, selector: Sel, _sender: id) {
-    if let (Some(platform), Some(os_action)) = (platform(), os_action_for_selector(selector)) {
-        platform.perform_os_action(os_action);
+fn keystroke_for_edit_selector(selector: Sel) -> Option<Keystroke> {
+    let (key, shift) = if selector == sel!(cut:) {
+        ("x", false)
+    } else if selector == sel!(copy:) {
+        ("c", false)
+    } else if selector == sel!(paste:) {
+        ("v", false)
+    } else if selector == sel!(selectAll:) {
+        ("a", false)
+    } else if selector == sel!(undo:) {
+        ("z", false)
+    } else if selector == sel!(redo:) {
+        ("z", true)
+    } else {
+        return None;
+    };
+    Some(Keystroke {
+        modifiers: Modifiers {
+            platform: true,
+            shift,
+            ..Modifiers::default()
+        },
+        key: key.to_string(),
+        key_char: None,
+    })
+}
+
+/// The shortcuts UIKit reserves for its standard edit actions never reach
+/// `pressesBegan:`; without a text view to act on, UIKit drops them. These
+/// `UIKeyCommand`s, which ask for priority over that system behaviour,
+/// claim them back and replay them as the keystrokes they are.
+const RESERVED_SHORTCUTS: [(&str, bool); 6] = [
+    ("z", false),
+    ("z", true),
+    ("x", false),
+    ("c", false),
+    ("v", false),
+    ("a", false),
+];
+
+extern "C" fn reserved_key_commands(_this: &Object, _: Sel) -> id {
+    unsafe {
+        let commands: id = msg_send![class!(NSMutableArray), array];
+        for (key, shift) in RESERVED_SHORTCUTS {
+            let mut flags = super::events::UI_KEY_MODIFIER_COMMAND;
+            if shift {
+                flags |= super::events::UI_KEY_MODIFIER_SHIFT;
+            }
+            let command: id = msg_send![
+                class!(UIKeyCommand),
+                keyCommandWithInput: ns_string(key)
+                modifierFlags: flags
+                action: sel!(handleGPUIReservedShortcut:)
+            ];
+            let responds: BOOL =
+                msg_send![command, respondsToSelector: sel!(setWantsPriorityOverSystemBehavior:)];
+            if responds == YES {
+                let _: () = msg_send![command, setWantsPriorityOverSystemBehavior: YES];
+            }
+            let _: () = msg_send![commands, addObject: command];
+        }
+        commands
     }
+}
+
+extern "C" fn handle_reserved_shortcut(this: &Object, _: Sel, command: id) {
+    let (key, flags) = unsafe {
+        let input: id = msg_send![command, input];
+        let flags: usize = msg_send![command, modifierFlags];
+        (input.to_str().to_string(), flags)
+    };
+    let keystroke = Keystroke {
+        modifiers: modifiers_from_flags(flags),
+        key,
+        key_char: None,
+    };
+    let state = unsafe { get_window_state(this) };
+    send_event(
+        &state,
+        PlatformInput::KeyDown(KeyDownEvent {
+            keystroke,
+            is_held: false,
+        }),
+    );
+}
+
+extern "C" fn can_perform_action(_this: &Object, _: Sel, action: Sel, _sender: id) -> BOOL {
+    standard_edit_selectors().contains(&action).to_objc()
+}
+
+extern "C" fn perform_edit_action(this: &Object, selector: Sel, _sender: id) {
+    if let (Some(platform), Some(os_action)) = (platform(), os_action_for_selector(selector)) {
+        if platform.os_action(os_action).is_some() {
+            platform.perform_os_action(os_action);
+            return;
+        }
+    }
+    let Some(keystroke) = keystroke_for_edit_selector(selector) else {
+        return;
+    };
+    let state = unsafe { get_window_state(this) };
+    send_event(
+        &state,
+        PlatformInput::KeyDown(KeyDownEvent {
+            keystroke,
+            is_held: false,
+        }),
+    );
 }
 
 /// UIKeyInput. Enter, tab and backspace are offered to gpui as keystrokes

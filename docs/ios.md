@@ -41,7 +41,12 @@ Working:
 - **Hardware keyboards**: `UIPress` events become `KeyDown`/`KeyUp` with
   the macOS `key`/`key_char` conventions, and modifier state is tracked.
   Keys gpui leaves unhandled fall through to UIKit, which turns them into
-  text for the focused field.
+  text for the focused field. The shortcuts UIKit reserves for its
+  standard edit actions (cmd-z, cmd-shift-z, cmd-x, cmd-c, cmd-v, cmd-a)
+  are claimed back with priority `UIKeyCommand`s so they reach the keymap
+  like any other key; the standard `undo:`/`cut:`/… selectors (the system
+  edit menu's buttons) run the app's `OsAction` menu item when it has one
+  and are replayed as those keystrokes otherwise.
 - **The software keyboard and `UITextInput`**: the view becomes first
   responder exactly while a gpui text element has focus (that is what
   raises and dismisses the keyboard) and implements `UITextInput`, so
