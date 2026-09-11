@@ -116,6 +116,11 @@ the default alone. A press that is cancelled for a scroll is released far
 outside the window, so nothing clicks; a claimed drag taken over by a
 two-finger gesture is released where the finger last was.
 
+A finger hovers nothing once it lifts, so when the last touch ends (and
+any fling it started has stopped) the mouse is moved off the window:
+hover styles and tooltips clear instead of sticking to whatever the finger
+last rested on. An iPad pointer keeps its hover, as a mouse does.
+
 The 8pt slop, 0.5s hold and the deceleration rate are constants at the top
 of `src/platform/ios/window.rs`.
 

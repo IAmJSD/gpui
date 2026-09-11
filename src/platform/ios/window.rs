@@ -477,6 +477,9 @@ struct PrimaryTouch {
     touch: id,
     button: MouseButton,
     mode: TouchMode,
+    /// An iPad pointer rather than a finger or pencil: it keeps hovering
+    /// after it lets go, where a finger leaves nothing under it.
+    pointer: bool,
     start: Point<Pixels>,
     last: Point<Pixels>,
     /// Recent positions, for the fling velocity.
@@ -1613,6 +1616,7 @@ extern "C" fn touches_began(this: &Object, _: Sel, touches: id, event: id) {
             samples.push_back((now, position));
             lock.primary_touch = Some(PrimaryTouch {
                 touch,
+                pointer: is_pointer,
                 button,
                 mode,
                 start: position,
@@ -1663,6 +1667,28 @@ fn cancel_press(state: &Arc<Mutex<IosWindowState>>, button: MouseButton, mode: T
             modifiers,
             click_count: 1,
             pressure: 1.0,
+        }),
+    );
+}
+
+/// A finger that has lifted hovers nothing, but gpui's mouse stays where
+/// it last was, so whatever it rests on keeps its hover style, tooltips
+/// included, until the next touch lands somewhere else. Once no finger
+/// is down and no fling is running, move the mouse off the window.
+fn lift_hover(state: &Arc<Mutex<IosWindowState>>) {
+    let lock = state.lock();
+    if lock.primary_touch.is_some() || lock.momentum.is_some() {
+        return;
+    }
+    let modifiers = lock.modifiers;
+    drop(lock);
+    send_event(
+        state,
+        PlatformInput::MouseMove(MouseMoveEvent {
+            position: CANCEL_POSITION,
+            pressed_button: None,
+            modifiers,
+            pressure: 0.0,
         }),
     );
 }
@@ -1870,6 +1896,9 @@ fn finish_touch(this: &Object, touches: id, cancelled: bool) {
                     state.lock().last_tap = None;
                 }
             }
+            if !primary.pointer {
+                lift_hover(&state);
+            }
         }
     }
 }
@@ -1954,6 +1983,9 @@ fn tick_momentum(state: &Arc<Mutex<IosWindowState>>) {
             },
         }),
     );
+    if finished {
+        lift_hover(state);
+    }
 }
 
 /// Gesture recognizers.
@@ -1997,6 +2029,9 @@ extern "C" fn handle_pinch(this: &Object, _: Sel, recognizer: id) {
                 phase,
             }),
         );
+        if phase == TouchPhase::Ended {
+            lift_hover(&state);
+        }
     }
 }
 
@@ -2172,6 +2207,9 @@ extern "C" fn handle_two_finger_pan(this: &Object, _: Sel, recognizer: id) {
                 touch_phase: phase,
             }),
         );
+        if phase == TouchPhase::Ended {
+            lift_hover(&state);
+        }
     }
 }
 
