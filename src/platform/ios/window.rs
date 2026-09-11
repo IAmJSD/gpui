@@ -33,9 +33,9 @@ use super::{
 use crate::{
     AnyWindowHandle, Bounds, Capslock, DispatchEventResult, Edges, ForegroundExecutor, GpuSpecs,
     KeyDownEvent, KeyUpEvent, Keystroke, MenuItem, Modifiers, ModifiersChangedEvent, MouseButton,
-    MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, PinchEvent, Pixels,
-    PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point,
-    PromptButton, PromptLevel, RequestFrameOptions, ScrollDelta, ScrollWheelEvent, Size,
+    MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, OwnedMenuItem, PinchEvent,
+    Pixels, PlatformAtlas, PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow,
+    Point, PromptButton, PromptLevel, RequestFrameOptions, ScrollDelta, ScrollWheelEvent, Size,
     TouchPhase, WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControlArea,
     WindowKind, WindowParams, appearance_from_style, point, px,
 };
@@ -529,8 +529,6 @@ struct IosWindowState {
     last_press: (usize, f64),
     last_appearance: WindowAppearance,
     title: String,
-    /// Actions of the native context menu currently shown, if any.
-    context_menu_actions: Vec<Box<dyn crate::Action>>,
 }
 
 unsafe impl Send for IosWindowState {}
@@ -684,7 +682,6 @@ impl IosWindow {
                 last_press: (0, 0.0),
                 last_appearance: WindowAppearance::Light,
                 title: String::new(),
-                context_menu_actions: Vec::new(),
             })));
 
             (*native_window).set_ivar(
@@ -1059,70 +1056,138 @@ impl PlatformWindow for IosWindow {
     }
 
     fn show_context_menu(&self, position: Point<Pixels>, items: Vec<MenuItem>) -> bool {
-        let mut actions: Vec<Box<dyn crate::Action>> = Vec::new();
-        let mut entries: Vec<(String, usize)> = Vec::new();
-        flatten_context_menu(items, "", &mut actions, &mut entries);
-        if entries.is_empty() {
+        let items: Vec<OwnedMenuItem> = items.into_iter().map(MenuItem::owned).collect();
+        if !menu_has_rows(&items) {
             return false;
         }
-
-        let mut lock = self.0.lock();
-        lock.context_menu_actions = actions;
-        let view = lock.native_view.as_ptr();
-        let controller = unsafe { topmost(lock.view_controller) };
-        let state = self.0.clone();
-        drop(lock);
-
-        unsafe {
-            let sheet: id = msg_send![
-                class!(UIAlertController),
-                alertControllerWithTitle: nil
-                message: nil
-                preferredStyle: 0isize
-            ];
-            for (title, index) in entries {
-                let state = state.clone();
-                let handler = ConcreteBlock::new(move |_action: id| {
-                    let action = state
-                        .lock()
-                        .context_menu_actions
-                        .get(index)
-                        .map(|action| action.boxed_clone());
-                    if let (Some(action), Some(platform)) = (action, platform()) {
-                        platform.dispatch_menu_action(action.as_ref());
-                    }
-                });
-                let handler = handler.copy();
-                let action: id = msg_send![
-                    class!(UIAlertAction),
-                    actionWithTitle: ns_string(&title)
-                    style: 0isize
-                    handler: &*handler
-                ];
-                let _: () = msg_send![sheet, addAction: action];
-            }
-            let cancel: id = msg_send![
-                class!(UIAlertAction),
-                actionWithTitle: ns_string("Cancel")
-                style: 1isize
-                handler: nil
-            ];
-            let _: () = msg_send![sheet, addAction: cancel];
-
-            // On iPad an action sheet is a popover and needs an anchor.
-            let popover: id = msg_send![sheet, popoverPresentationController];
-            if !popover.is_null() {
-                let _: () = msg_send![popover, setSourceView: view];
-                let anchor = NSRect::new(
-                    NSPoint::new(position.x.0 as f64, position.y.0 as f64),
-                    NSSize::new(1., 1.),
-                );
-                let _: () = msg_send![popover, setSourceRect: anchor];
-            }
-            let _: () =
-                msg_send![controller, presentViewController: sheet animated: YES completion: nil];
-        }
+        present_menu_sheet(self.0.clone(), position, Arc::new(items), Vec::new());
         true
+    }
+}
+
+/// Whether a menu has anything a sheet could show.
+fn menu_has_rows(items: &[OwnedMenuItem]) -> bool {
+    items.iter().any(|item| match item {
+        OwnedMenuItem::Action { .. } => true,
+        OwnedMenuItem::Submenu(menu) => menu_has_rows(&menu.items),
+        OwnedMenuItem::Separator | OwnedMenuItem::SystemMenu(_) => false,
+    })
+}
+
+/// The trail of menus above the one showing, outermost first: each is
+/// the parent's name and its items, so a sheet can offer a row back.
+type MenuTrail = Vec<(String, Arc<Vec<OwnedMenuItem>>)>;
+
+/// One level of a native menu, as an action sheet (a popover anchored at
+/// `position` on iPad). A submenu is a row that opens the next sheet, and
+/// every sheet below the first starts with a row back to its parent. The
+/// next sheet is presented a turn later, once the tapped one has gone.
+fn present_menu_sheet(
+    state: Arc<Mutex<IosWindowState>>,
+    position: Point<Pixels>,
+    items: Arc<Vec<OwnedMenuItem>>,
+    parents: MenuTrail,
+) {
+    let lock = state.lock();
+    let view = lock.native_view.as_ptr();
+    let controller = unsafe { topmost(lock.view_controller) };
+    let executor = lock.executor.clone();
+    drop(lock);
+
+    let present_later = Arc::new(
+        move |state: Arc<Mutex<IosWindowState>>,
+              items: Arc<Vec<OwnedMenuItem>>,
+              parents: MenuTrail| {
+            executor
+                .spawn(async move { present_menu_sheet(state, position, items, parents) })
+                .detach();
+        },
+    );
+
+    unsafe {
+        let sheet: id = msg_send![
+            class!(UIAlertController),
+            alertControllerWithTitle: nil
+            message: nil
+            preferredStyle: 0isize
+        ];
+        let add_action = |title: &str, handler: Box<dyn Fn()>| {
+            let handler = ConcreteBlock::new(move |_: id| handler()).copy();
+            let action: id = msg_send![
+                class!(UIAlertAction),
+                actionWithTitle: ns_string(title)
+                style: 0isize
+                handler: &*handler
+            ];
+            let _: () = msg_send![sheet, addAction: action];
+        };
+
+        if let Some((parent_name, parent_items)) = parents.last().cloned() {
+            let state = state.clone();
+            let present_later = present_later.clone();
+            let mut grandparents = parents.clone();
+            grandparents.pop();
+            add_action(
+                &format!("\u{2039} {parent_name}"),
+                Box::new(move || {
+                    present_later(state.clone(), parent_items.clone(), grandparents.clone())
+                }),
+            );
+        }
+
+        for item in items.iter() {
+            match item {
+                OwnedMenuItem::Action { name, action, .. } => {
+                    let action = action.boxed_clone();
+                    add_action(
+                        name,
+                        Box::new(move || {
+                            if let Some(platform) = platform() {
+                                platform.dispatch_menu_action(action.as_ref());
+                            }
+                        }),
+                    );
+                }
+                OwnedMenuItem::Submenu(menu) => {
+                    if !menu_has_rows(&menu.items) {
+                        continue;
+                    }
+                    let state = state.clone();
+                    let present_later = present_later.clone();
+                    let children = Arc::new(menu.items.clone());
+                    let mut trail = parents.clone();
+                    trail.push((menu.name.to_string(), items.clone()));
+                    add_action(
+                        &format!("{} \u{203a}", menu.name),
+                        Box::new(move || {
+                            present_later(state.clone(), children.clone(), trail.clone())
+                        }),
+                    );
+                }
+                OwnedMenuItem::Separator | OwnedMenuItem::SystemMenu(_) => {}
+            }
+        }
+
+        let cancel: id = msg_send![
+            class!(UIAlertAction),
+            actionWithTitle: ns_string("Cancel")
+            style: 1isize
+            handler: nil
+        ];
+        let _: () = msg_send![sheet, addAction: cancel];
+
+        // On iPad an action sheet is a popover and needs an anchor.
+        let popover: id = msg_send![sheet, popoverPresentationController];
+        if !popover.is_null() {
+            let _: () = msg_send![popover, setSourceView: view];
+            let anchor = NSRect::new(
+                NSPoint::new(position.x.0 as f64, position.y.0 as f64),
+                NSSize::new(1., 1.),
+            );
+            let _: () = msg_send![popover, setSourceRect: anchor];
+        }
+        let _: () =
+            msg_send![controller, presentViewController: sheet animated: YES completion: nil];
     }
 }
 
@@ -1142,28 +1207,6 @@ impl rwh::HasDisplayHandle for IosWindow {
             Ok(rwh::DisplayHandle::borrow_raw(
                 rwh::UiKitDisplayHandle::new().into(),
             ))
-        }
-    }
-}
-
-/// Flattens a menu tree into sheet rows: submenus become "Menu ▸ Item".
-fn flatten_context_menu(
-    items: Vec<MenuItem>,
-    prefix: &str,
-    actions: &mut Vec<Box<dyn crate::Action>>,
-    entries: &mut Vec<(String, usize)>,
-) {
-    for item in items {
-        match item {
-            MenuItem::Action { name, action, .. } => {
-                entries.push((format!("{prefix}{name}"), actions.len()));
-                actions.push(action);
-            }
-            MenuItem::Submenu(menu) => {
-                let prefix = format!("{prefix}{} ▸ ", menu.name);
-                flatten_context_menu(menu.items, &prefix, actions, entries);
-            }
-            MenuItem::Separator | MenuItem::SystemMenu(_) => {}
         }
     }
 }

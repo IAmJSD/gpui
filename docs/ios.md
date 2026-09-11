@@ -68,8 +68,9 @@ Working:
   quick actions.
 - **Context menus**: `Window::show_context_menu(position, items)` presents
   a native menu, an action sheet on iPhone and a popover anchored at the
-  position on iPad. Submenus flatten to "Menu ▸ Item" rows. The chosen
-  item's action is dispatched like an app-menu action. It returns `false`
+  position on iPad. A submenu is a "Name ›" row that opens the next sheet,
+  which starts with a "‹ Name" row back to its parent. The chosen item's
+  action is dispatched like an app-menu action. It returns `false`
   on platforms with no native menu (all the desktops), so a caller can draw
   its own there.
 - **The edit menu**: with a text field focused, a long press presents the
