@@ -11,23 +11,28 @@ mod mac;
 #[cfg(target_os = "ios")]
 mod ios;
 
+#[cfg(target_os = "android")]
+mod android;
+
 #[cfg(any(
     all(
         any(target_os = "linux", target_os = "freebsd"),
         any(feature = "x11", feature = "wayland")
     ),
-    all(target_os = "macos", feature = "macos-blade")
+    all(target_os = "macos", feature = "macos-blade"),
+    target_os = "android"
 ))]
 mod blade;
 
-// The cosmic-text text system is pure Rust and shared by the Linux backends
-// and the web backend.
+// The cosmic-text text system is pure Rust and shared by the Linux backends,
+// the web backend and Android.
 #[cfg(any(
     all(
         any(target_os = "linux", target_os = "freebsd"),
         any(feature = "x11", feature = "wayland")
     ),
-    target_arch = "wasm32"
+    target_arch = "wasm32",
+    target_os = "android"
 ))]
 mod cosmic_text_system;
 
@@ -90,12 +95,17 @@ pub use app_menu::*;
 pub use keyboard::*;
 pub use keystroke::*;
 
+#[cfg(target_os = "android")]
+pub use android::entry as android_entry;
+#[cfg(target_os = "android")]
+pub(crate) use android::*;
 #[cfg(any(
     all(
         any(target_os = "linux", target_os = "freebsd"),
         any(feature = "x11", feature = "wayland")
     ),
-    target_arch = "wasm32"
+    target_arch = "wasm32",
+    target_os = "android"
 ))]
 pub(crate) use cosmic_text_system::*;
 #[cfg(target_os = "ios")]
@@ -128,6 +138,11 @@ pub(crate) fn current_platform(headless: bool) -> Rc<dyn Platform> {
 #[cfg(target_os = "ios")]
 pub(crate) fn current_platform(headless: bool) -> Rc<dyn Platform> {
     Rc::new(IosPlatform::new(headless))
+}
+
+#[cfg(target_os = "android")]
+pub(crate) fn current_platform(headless: bool) -> Rc<dyn Platform> {
+    Rc::new(AndroidPlatform::new(headless))
 }
 
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
@@ -931,7 +946,9 @@ pub(crate) struct PlatformInputHandler {
             any(target_os = "linux", target_os = "freebsd"),
             not(any(feature = "x11", feature = "wayland"))
         ),
-        target_arch = "wasm32"
+        target_arch = "wasm32",
+        // Android has no IME protocol; text arrives as key events.
+        target_os = "android"
     ),
     allow(dead_code)
 )]
@@ -1227,26 +1244,44 @@ pub(crate) struct WindowParams {
     pub titlebar: Option<TitlebarOptions>,
 
     /// The kind of window to create
-    #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(dead_code))]
+    #[cfg_attr(
+        any(target_os = "linux", target_os = "freebsd", target_os = "android"),
+        allow(dead_code)
+    )]
     pub kind: WindowKind,
 
     /// Whether the window should be movable by the user
     #[cfg_attr(
-        any(target_os = "linux", target_os = "freebsd", target_os = "ios"),
+        any(
+            target_os = "linux",
+            target_os = "freebsd",
+            target_os = "ios",
+            target_os = "android"
+        ),
         allow(dead_code)
     )]
     pub is_movable: bool,
 
     /// Whether the window should be resizable by the user
     #[cfg_attr(
-        any(target_os = "linux", target_os = "freebsd", target_os = "ios"),
+        any(
+            target_os = "linux",
+            target_os = "freebsd",
+            target_os = "ios",
+            target_os = "android"
+        ),
         allow(dead_code)
     )]
     pub is_resizable: bool,
 
     /// Whether the window should be minimized by the user
     #[cfg_attr(
-        any(target_os = "linux", target_os = "freebsd", target_os = "ios"),
+        any(
+            target_os = "linux",
+            target_os = "freebsd",
+            target_os = "ios",
+            target_os = "android"
+        ),
         allow(dead_code)
     )]
     pub is_minimizable: bool,
@@ -1256,22 +1291,31 @@ pub(crate) struct WindowParams {
             target_os = "linux",
             target_os = "freebsd",
             target_os = "windows",
-            target_os = "ios"
+            target_os = "ios",
+            target_os = "android"
         ),
         allow(dead_code)
     )]
     pub focus: bool,
 
     #[cfg_attr(
-        any(target_os = "linux", target_os = "freebsd", target_os = "ios"),
+        any(
+            target_os = "linux",
+            target_os = "freebsd",
+            target_os = "ios",
+            target_os = "android"
+        ),
         allow(dead_code)
     )]
     pub show: bool,
 
-    #[cfg_attr(any(feature = "wayland", target_os = "ios"), allow(dead_code))]
+    #[cfg_attr(
+        any(feature = "wayland", target_os = "ios", target_os = "android"),
+        allow(dead_code)
+    )]
     pub display_id: Option<DisplayId>,
 
-    #[cfg_attr(target_os = "ios", allow(dead_code))]
+    #[cfg_attr(any(target_os = "ios", target_os = "android"), allow(dead_code))]
     pub window_min_size: Option<Size<Pixels>>,
     #[cfg(target_os = "macos")]
     pub tabbing_identifier: Option<String>,
@@ -1939,7 +1983,12 @@ impl ClipboardString {
     }
 
     #[cfg_attr(
-        any(target_os = "linux", target_os = "freebsd", target_arch = "wasm32"),
+        any(
+            target_os = "linux",
+            target_os = "freebsd",
+            target_os = "android",
+            target_arch = "wasm32"
+        ),
         allow(dead_code)
     )]
     pub(crate) fn text_hash(text: &str) -> u64 {

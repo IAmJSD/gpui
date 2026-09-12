@@ -344,10 +344,28 @@ pub struct BladeRenderer {
 }
 
 impl BladeRenderer {
+    #[cfg_attr(target_os = "android", allow(dead_code))]
     pub fn new<I: raw_window_handle::HasWindowHandle + raw_window_handle::HasDisplayHandle>(
         context: &BladeContext,
         window: &I,
         config: BladeSurfaceConfig,
+    ) -> anyhow::Result<Self> {
+        let atlas = Arc::new(BladeAtlas::new(&context.gpu));
+        Self::new_with_atlas(context, window, config, atlas)
+    }
+
+    /// Like `new`, drawing from an atlas that already exists. A platform
+    /// whose surface comes and goes (Android's does, with the activity's
+    /// lifecycle) keeps the atlas across renderers, so the glyphs and
+    /// images already rasterized survive.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub fn new_with_atlas<
+        I: raw_window_handle::HasWindowHandle + raw_window_handle::HasDisplayHandle,
+    >(
+        context: &BladeContext,
+        window: &I,
+        config: BladeSurfaceConfig,
+        atlas: Arc<BladeAtlas>,
     ) -> anyhow::Result<Self> {
         let surface_config = gpu::SurfaceConfig {
             size: config.size,
@@ -377,7 +395,6 @@ impl BladeRenderer {
             min_chunk_size: 0x1000,
             alignment: 0x40, // Vulkan `minStorageBufferOffsetAlignment` on Intel Xe
         });
-        let atlas = Arc::new(BladeAtlas::new(&context.gpu));
         let atlas_sampler = context.gpu.create_sampler(gpu::SamplerDesc {
             name: "path rasterization sampler",
             mag_filter: gpu::FilterMode::Linear,
@@ -460,7 +477,12 @@ impl BladeRenderer {
     /// cases like restoring a window from minimization where the size is the same but the
     /// renderer's swap chain needs to be recreated.
     #[cfg_attr(
-        any(target_os = "macos", target_os = "linux", target_os = "freebsd"),
+        any(
+            target_os = "macos",
+            target_os = "linux",
+            target_os = "freebsd",
+            target_os = "android"
+        ),
         allow(dead_code)
     )]
     pub fn update_drawable_size_even_if_unchanged(&mut self, size: Size<DevicePixels>) {
@@ -511,6 +533,7 @@ impl BladeRenderer {
         }
     }
 
+    #[cfg_attr(target_os = "android", allow(dead_code))]
     pub fn update_transparency(&mut self, transparent: bool) {
         if transparent != self.surface_config.transparent {
             self.wait_for_gpu();
@@ -534,6 +557,7 @@ impl BladeRenderer {
         self.surface_config.size
     }
 
+    #[cfg_attr(target_os = "android", allow(dead_code))]
     pub fn sprite_atlas(&self) -> &Arc<BladeAtlas> {
         &self.atlas
     }
@@ -621,9 +645,23 @@ impl BladeRenderer {
         }
     }
 
+    #[cfg_attr(target_os = "android", allow(dead_code))]
     pub fn destroy(&mut self) {
+        self.destroy_impl(true);
+    }
+
+    /// Releases the surface and everything else of the renderer's own,
+    /// leaving the atlas for a later renderer (see `new_with_atlas`).
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub fn destroy_keeping_atlas(&mut self) {
+        self.destroy_impl(false);
+    }
+
+    fn destroy_impl(&mut self, destroy_atlas: bool) {
         self.wait_for_gpu();
-        self.atlas.destroy();
+        if destroy_atlas {
+            self.atlas.destroy();
+        }
         self.gpu.destroy_sampler(self.atlas_sampler);
         self.instance_belt.destroy(&self.gpu);
         self.gpu.destroy_command_encoder(&mut self.command_encoder);

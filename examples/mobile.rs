@@ -1,13 +1,15 @@
-//! Touch, gestures and menus on iOS and iPadOS.
+//! Touch, gestures and menus on iOS, iPadOS and Android.
 //!
-//! Run it in the simulator with `examples/ios/run-simulator.sh mobile`
-//! (see `docs/ios.md`). It also runs on the desktop, where the same code
-//! gets a real mouse. What to try:
+//! Run it in the iOS Simulator with `examples/ios/run-simulator.sh mobile`
+//! (see `docs/ios.md`) or on an Android device or emulator with
+//! `examples/android/run-emulator.sh mobile` (see `docs/android.md`). It
+//! also runs on the desktop, where the same code gets a real mouse. What
+//! to try:
 //!
 //! * drag the list to scroll it, and fling it for momentum;
 //! * pinch the square to scale it;
 //! * long-press the banner for a native context menu (an action sheet on
-//!   iPhone, a popover on iPad);
+//!   iPhone, a popover on iPad; Android has none, and says so);
 //! * on an iPad with a keyboard, hold Command for the app menu's shortcuts,
 //!   or open the menu bar;
 //! * rotate the device: the content stays inside the safe area.
@@ -160,3 +162,7 @@ fn main() {
         cx.activate(true);
     });
 }
+
+// An Android app starts in `android_main`; on every other platform this
+// expands to nothing.
+gpui::android_main!(main);

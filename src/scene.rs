@@ -457,8 +457,8 @@ pub(crate) enum PrimitiveBatch<'a> {
         texture_id: AtlasTextureId,
         sprites: &'a [PolychromeSprite],
     },
-    // iOS compiles the surface batch but never paints one.
-    #[cfg_attr(target_os = "ios", allow(dead_code))]
+    // iOS and Android compile the surface batch but never paint one.
+    #[cfg_attr(any(target_os = "ios", target_os = "android"), allow(dead_code))]
     Surfaces(&'a [PaintSurface]),
 }
 

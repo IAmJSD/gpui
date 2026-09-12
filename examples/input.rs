@@ -744,3 +744,7 @@ fn main() {
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
     });
 }
+
+// An Android app starts in `android_main`; on every other platform this
+// expands to nothing.
+gpui::android_main!(main);

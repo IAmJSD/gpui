@@ -240,6 +240,24 @@ path = "examples/window_shadow.rs"
 name = "mobile"
 path = "examples/mobile.rs"
 
+# The same examples as shared libraries for Android, where NativeActivity
+# loads the app rather than running an executable. Built by
+# examples/android/run-emulator.sh; see docs/android.md.
+[[example]]
+name = "hello_world_android"
+path = "examples/android/hello_world.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "input_android"
+path = "examples/android/input.rs"
+crate-type = ["cdylib"]
+
+[[example]]
+name = "mobile_android"
+path = "examples/android/mobile.rs"
+crate-type = ["cdylib"]
+
 [[test]]
 name = "action_macros"
 path = "tests/action_macros.rs"
@@ -690,7 +708,7 @@ optional = true
 version = "25.0"
 features = ["wgsl-in"]
 
-[target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos", target_os = "ios", target_arch = "wasm32"))'.dependencies.pathfinder_geometry]
+[target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "macos", target_os = "ios", target_os = "android", target_arch = "wasm32"))'.dependencies.pathfinder_geometry]
 version = "0.5"
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "windows"))'.dependencies.scap]
@@ -811,6 +829,39 @@ default-features = false
 version = "25.0"
 features = ["wgsl-in"]
 
+# Android: NativeActivity through android-activity, the blade (Vulkan)
+# renderer and the cosmic-text text system shared with Linux, and JNI for
+# the handful of platform services (clipboard, insets, keystore, intents)
+# that only exist in Java. See docs/android.md.
+[target.'cfg(target_os = "android")'.dependencies.android-activity]
+version = "0.6.1"
+features = ["native-activity"]
+
+[target.'cfg(target_os = "android")'.dependencies.blade-graphics]
+version = "0.7.0"
+
+[target.'cfg(target_os = "android")'.dependencies.blade-macros]
+version = "0.3.0"
+
+[target.'cfg(target_os = "android")'.dependencies.blade-util]
+version = "0.3.0"
+
+[target.'cfg(target_os = "android")'.dependencies.bytemuck]
+version = "1"
+
+[target.'cfg(target_os = "android")'.dependencies.cosmic-text]
+version = "0.14.0"
+
+[target.'cfg(target_os = "android")'.dependencies.flume]
+version = "0.11"
+
+[target.'cfg(target_os = "android")'.dependencies.jni]
+version = "0.22.4"
+
+[target.'cfg(target_os = "android")'.build-dependencies.naga]
+version = "25.0"
+features = ["wgsl-in"]
+
 [target.'cfg(target_os = "windows")'.dependencies.flume]
 version = "0.11"
 
@@ -910,3 +961,4 @@ priority = 0
 [patch.crates-io]
 gpui_util = { path = "vendor/util" }
 gpui_http_client = { path = "vendor/http_client" }
+blade-graphics = { path = "vendor/blade-graphics" }

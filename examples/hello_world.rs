@@ -104,3 +104,7 @@ fn main() {
         cx.activate(true);
     });
 }
+
+// An Android app starts in `android_main`; on every other platform this
+// expands to nothing.
+gpui::android_main!(main);

@@ -101,6 +101,22 @@ action sheet or popover. See [docs/ios.md](docs/ios.md) for the status,
 build steps and `examples/ios/run-simulator.sh`, which runs any example in
 the Simulator (`examples/mobile.rs` exercises the touch and menu paths).
 
+## Running on Android
+
+This fork also builds for `aarch64-linux-android` (and `x86_64`), as a
+shared library loaded by Android's own `NativeActivity`, so an app needs no
+Java: `gpui::android_main!(main)` next to an ordinary `main` is the whole
+entry point. Rendering is the blade Vulkan renderer shared with Linux, text
+the cosmic-text stack with the system's Roboto and Noto fonts, and touch is
+mapped onto gpui's mouse model as on iOS: taps click, drags scroll with
+momentum, a long press is a right click, two fingers pan and pinch
+(`PinchEvent`), a stylus draws with pressure, and a mouse is a mouse. The
+software keyboard appears while a gpui text field has focus and types into
+it; `Window::safe_area_insets()` reports the status bar, navigation bar,
+display cutout and keyboard. See [docs/android.md](docs/android.md) for the
+status, build steps and `examples/android/run-emulator.sh`, which builds
+any example into an APK and runs it on a device or an emulator it boots.
+
 ## Pinch gestures
 
 This fork adds a `PinchEvent` alongside `ScrollWheelEvent`, so trackpad
@@ -134,6 +150,7 @@ to the element under the centroid.
 | --- | --- | --- |
 | macOS | Supported | `magnifyWithEvent:` / `NSEventTypeMagnify` |
 | iOS/iPadOS | Supported | `UIPinchGestureRecognizer`; trackpad pinches on iPad arrive the same way |
+| Android | Supported | Two touch pointers, tracked by the backend; a two-finger drag scrolls at the same time |
 | Linux/Wayland | Supported | `zwp_pointer_gestures_v1` pinch, when the compositor advertises it |
 | Linux/X11 | Supported | XI 2.4 gesture events (xorg-server 21.1+, libinput); older servers deliver nothing |
 | Windows | Touchscreen; touchpad opt-in | `WM_GESTURE` / `GID_ZOOM`; precision touchpads need Direct Manipulation, see below |

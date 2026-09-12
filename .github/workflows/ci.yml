@@ -27,7 +27,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown, x86_64-pc-windows-gnu
+          targets: wasm32-unknown-unknown, x86_64-pc-windows-gnu, aarch64-linux-android
 
       - uses: Swatinem/rust-cache@v2
 
@@ -54,3 +54,14 @@ jobs:
       # C build scripts; see UPSTREAM.md for the reasoning.
       - name: Windows cross-check
         run: cargo check --target x86_64-pc-windows-gnu
+
+      # The runner image ships an NDK; the android-activity glue compiles a
+      # C file with its clang.
+      - name: Android cross-check
+        run: |
+          toolchain="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$toolchain/aarch64-linux-android30-clang"
+          export CC_aarch64_linux_android="$toolchain/aarch64-linux-android30-clang"
+          export AR_aarch64_linux_android="$toolchain/llvm-ar"
+          cargo check --target aarch64-linux-android
+          cargo check --target aarch64-linux-android --example mobile_android --example input_android --example hello_world_android

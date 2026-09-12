@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Manifest template for the gpui examples; examples/android/run-emulator.sh
+  fills in __PACKAGE__, __NAME__ and __LIB__ (the example's library name).
+
+  The activity is Android's own NativeActivity, which loads lib__LIB__.so
+  and calls its `android_main` (see `gpui::android_main!`); no Java is
+  compiled. `configChanges` keeps a rotation or a dark-mode switch from
+  recreating the activity: gpui gets a resize or appearance change instead.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="__PACKAGE__"
+    android:versionCode="1"
+    android:versionName="0.1">
+
+    <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="35" />
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-feature android:name="android.hardware.vulkan.version"
+        android:version="0x401000"
+        android:required="true" />
+
+    <application
+        android:label="__NAME__"
+        android:hasCode="false"
+        android:extractNativeLibs="true"
+        android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+        <activity
+            android:name="android.app.NativeActivity"
+            android:label="__NAME__"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density|locale|fontScale"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data android:name="android.app.lib_name" android:value="__LIB__" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

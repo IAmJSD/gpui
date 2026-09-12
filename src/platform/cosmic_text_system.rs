@@ -55,6 +55,24 @@ impl CosmicTextSystem {
         // todo(linux) make font loading non-blocking
         let mut font_system = FontSystem::new();
 
+        // fontdb knows no system font directories on Android; the platform
+        // fonts live in these, and Roboto is the system UI face.
+        #[cfg(target_os = "android")]
+        {
+            let db = font_system.db_mut();
+            for dir in [
+                "/system/fonts",
+                "/system/font",
+                "/product/fonts",
+                "/data/fonts",
+            ] {
+                db.load_fonts_dir(dir);
+            }
+            db.set_sans_serif_family("Roboto");
+            db.set_serif_family("Noto Serif");
+            db.set_monospace_family("Droid Sans Mono");
+        }
+
         Self(RwLock::new(CosmicTextSystemState {
             font_system,
             swash_cache: SwashCache::new(),
@@ -212,7 +230,11 @@ impl CosmicTextSystemState {
         features: &FontFeatures,
     ) -> Result<SmallVec<[FontId; 4]>> {
         // TODO: Determine the proper system UI font.
-        let name = crate::text_system::font_name_with_fallbacks(name, "IBM Plex Sans");
+        #[cfg(not(target_os = "android"))]
+        let system_font = "IBM Plex Sans";
+        #[cfg(target_os = "android")]
+        let system_font = "Roboto";
+        let name = crate::text_system::font_name_with_fallbacks(name, system_font);
 
         let families = self
             .font_system
@@ -537,7 +559,7 @@ impl From<FontStyle> for cosmic_text::Style {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn find_best_match(
     candidates: &[font_kit::properties::Properties],
     font: &crate::Font,
@@ -546,16 +568,17 @@ fn find_best_match(
 }
 
 /// The face properties that participate in matching, in fontdb's terms.
-/// font-kit does not compile for wasm, so the web build matches with a local
-/// approximation of CSS font matching instead.
-#[cfg(target_arch = "wasm32")]
+/// font-kit does not compile for wasm and would bring FreeType to Android,
+/// so those builds match with a local approximation of CSS font matching
+/// instead.
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
 struct FaceProperties {
     style: cosmic_text::Style,
     weight: u16,
     stretch: cosmic_text::Stretch,
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
 fn find_best_match(candidates: &[FaceProperties], font: &crate::Font) -> Option<usize> {
     use cosmic_text::{Stretch, Style};
 
@@ -596,7 +619,7 @@ fn find_best_match(candidates: &[FaceProperties], font: &crate::Font) -> Option<
         .map(|(ix, _)| ix)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn font_into_properties(font: &crate::Font) -> font_kit::properties::Properties {
     font_kit::properties::Properties {
         style: match font.style {
@@ -609,7 +632,7 @@ fn font_into_properties(font: &crate::Font) -> font_kit::properties::Properties 
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
 fn face_info_into_properties(face_info: &cosmic_text::fontdb::FaceInfo) -> FaceProperties {
     FaceProperties {
         style: face_info.style,
@@ -618,7 +641,7 @@ fn face_info_into_properties(face_info: &cosmic_text::fontdb::FaceInfo) -> FaceP
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn face_info_into_properties(
     face_info: &cosmic_text::fontdb::FaceInfo,
 ) -> font_kit::properties::Properties {

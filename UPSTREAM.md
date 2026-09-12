@@ -60,6 +60,20 @@ cargo check --target aarch64-apple-ios-sim
 cargo check --target aarch64-apple-ios
 ```
 
+Android shares the blade renderer with Linux and the cosmic-text text
+system with Linux and the web, so changes to either need the Android target
+checked too. `cargo check` needs an NDK (the `android-activity` glue
+compiles a C file with the NDK's clang), which `examples/android/run-emulator.sh`
+finds under `ANDROID_HOME`; by hand:
+
+```sh
+rustup target add aarch64-linux-android
+export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$NDK/toolchains/llvm/prebuilt/*/bin/aarch64-linux-android30-clang
+export CC_aarch64_linux_android=$CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER
+export AR_aarch64_linux_android=$NDK/toolchains/llvm/prebuilt/*/bin/llvm-ar
+cargo check --target aarch64-linux-android
+```
+
 Windows can be type-checked from Linux. `cargo check` never links, so the
 only obstacle is a couple of dependencies with C build scripts, and those
 only need to *succeed*:
@@ -169,6 +183,56 @@ time.
   the additions that came after that pass -- pinch, external paste, IME
   composition -- have not run in a browser yet. macOS *build hosts* need
   llvm-ar for the wasm target; see docs/web.md.
+
+- **An Android backend** (`platform/android`, targets
+  `aarch64-linux-android` and `x86_64-linux-android`), documented in
+  `docs/android.md`. The app is a `NativeActivity` reached through the
+  `android-activity` glue crate: `Platform::run` is the `android_main`
+  thread's loop, polling the activity's looper for lifecycle commands,
+  input and executor wake-ups, and pacing frames from the display's
+  refresh rate. The renderer is blade on Vulkan (the Linux one), with a
+  small change so the sprite atlas outlives the renderer: Android takes
+  the surface away whenever the activity leaves the foreground, and the
+  renderer goes with it, while the atlas (glyphs, images) is kept for the
+  next surface. Text is the cosmic-text stack, loading `/system/fonts`
+  itself (fontdb knows no Android directories) with Roboto as the system
+  face and a local font-matching step instead of font-kit, which would
+  have brought FreeType along. Touch is synthesised into the mouse model
+  as on iOS, only here every recognizer (slop, long press, two-finger pan,
+  pinch, fling) is hand-rolled in `window.rs`. Keys come with a key code
+  and a meta state; the characters come from the device's
+  `KeyCharacterMap` through JNI (the glue crate's own lookup fails for
+  the virtual keyboard's device id, which is what the software keyboard
+  reports). Everything only Java can do goes through the `jni` crate:
+  the clipboard, the window insets (`WindowInsets.getInsets`, API 30+),
+  `ACTION_VIEW` intents, the launch intent's data, the display's refresh
+  rate, `finish()`, and an AES key in the Android keystore that encrypts
+  the credentials written to the app's private storage. There is no way
+  to receive an activity result or implement a Java listener without a
+  compiled Java class, so file pickers, native menus and dialogs are not
+  provided (`prompt` returns `None`, `show_context_menu` `false`), and
+  the software keyboard drives text fields through key events rather than
+  an `InputConnection`, which rules out IME composition.
+
+  Building an APK without Gradle: `examples/android/run-emulator.sh`
+  builds the `<example>_android` cdylib targets (rustc cannot mix the
+  `bin` and `cdylib` crate types, so the Android examples are separate
+  targets wrapping the same sources), links a manifest with `aapt2`, adds
+  the library, `zipalign`s and signs with the debug keystore, and installs
+  and launches it with `adb`, booting an emulator if no device is
+  attached. `gpui::android_main!(main)` defines the `android_main` entry
+  the activity calls and expands to nothing elsewhere.
+
+  Exercised in the API 35 emulator on the SwiftShader Vulkan device
+  (rendering, insets, scroll and fling, long press, pinch, keys, the
+  software keyboard, clipboard, rotation, dark mode, backgrounding,
+  Back, relaunch); see `docs/android.md` for the list and what a real
+  device still has to confirm. Two things it turned up: the emulator's
+  driver lists none of the extensions blade requires by name although
+  they are core in its Vulkan 1.3, hence the vendored `blade-graphics`
+  (`vendor/README.md`), and `adb shell input swipe` under ~100ms sends a
+  down and an up with no move, which the touch synthesis now reads as a
+  scroll rather than a tap.
 
 - **Images on the Linux clipboards.** Both Linux backends wrote
   `item.text().unwrap_or_default()` and nothing else, so copying a

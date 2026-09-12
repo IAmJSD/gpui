@@ -86,6 +86,10 @@ pub use interactive::*;
 use key_dispatch::*;
 pub use keymap::*;
 pub use path_builder::*;
+/// The Android entry point support: the activity handle and the body of
+/// `android_main`. See `docs/android.md` and [`android_main!`].
+#[cfg(target_os = "android")]
+pub use platform::android_entry as android;
 pub use platform::*;
 pub use refineable::*;
 pub use scene::*;
@@ -110,6 +114,34 @@ pub use window::*;
 
 use std::{any::Any, borrow::BorrowMut, future::Future};
 use taffy::TaffyLayoutEngine;
+
+/// Defines the `android_main` entry point an Android app needs, running
+/// the given function (usually `main`) as its body. Expands to nothing on
+/// other platforms, so a binary can keep one `main` for every platform:
+///
+/// ```ignore
+/// fn main() {
+///     Application::new().run(|cx| { /* ... */ });
+/// }
+/// gpui::android_main!(main);
+/// ```
+///
+/// On Android the crate is built as a `cdylib` loaded by a
+/// `NativeActivity`; see `docs/android.md`.
+#[macro_export]
+macro_rules! android_main {
+    ($main:path) => {
+        #[cfg(target_os = "android")]
+        #[unsafe(no_mangle)]
+        fn android_main(app: $crate::android::AndroidApp) {
+            $crate::android::main(app, $main);
+        }
+        // Built as a library for Android on another platform (the
+        // `*_android` example targets), `main` would otherwise be unused.
+        #[cfg(not(target_os = "android"))]
+        const _: fn() = $main;
+    };
+}
 
 /// The context trait, allows the different contexts in GPUI to be used
 /// interchangeably for certain operations.
