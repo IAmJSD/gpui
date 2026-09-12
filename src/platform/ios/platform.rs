@@ -1402,13 +1402,7 @@ extern "C" fn handle_os_action(_this: &mut Object, selector: Sel, sender: id) {
 }
 
 /// `UIWindowSceneDelegate` callbacks.
-extern "C" fn scene_will_connect(
-    _this: &mut Object,
-    _: Sel,
-    scene: id,
-    _session: id,
-    _options: id,
-) {
+extern "C" fn scene_will_connect(_this: &mut Object, _: Sel, scene: id, _session: id, options: id) {
     let Some(platform) = platform() else {
         return;
     };
@@ -1423,25 +1417,53 @@ extern "C" fn scene_will_connect(
     for window in pending {
         platform.attach_window(window);
     }
+    // A file or URL the app was launched for arrives with the scene,
+    // not through `scene:openURLContexts:`; it waits in the queue until
+    // the app registers its callback.
+    if !options.is_null() {
+        let contexts: id = unsafe { msg_send![options, URLContexts] };
+        let urls = unsafe { urls_from_contexts(contexts) };
+        if !urls.is_empty() {
+            platform.deliver_urls(urls);
+        }
+    }
 }
 
 extern "C" fn scene_open_urls(_this: &mut Object, _: Sel, _scene: id, contexts: id) {
     let Some(platform) = platform() else {
         return;
     };
-    let urls = unsafe {
+    let urls = unsafe { urls_from_contexts(contexts) };
+    platform.deliver_urls(urls);
+}
+
+/// The URLs in a set of `UIOpenURLContext`s. A file another app hands
+/// over to be opened in place (`openInPlace`) is readable only inside a
+/// security scope, which is started here and never ended: the app may
+/// keep the file open for its whole life, as a document editor does.
+unsafe fn urls_from_contexts(contexts: id) -> Vec<String> {
+    unsafe {
+        if contexts.is_null() {
+            return Vec::new();
+        }
         let contexts: id = msg_send![contexts, allObjects];
         let count: usize = msg_send![contexts, count];
         (0..count)
             .map(|i| {
                 let context: id = msg_send![contexts, objectAtIndex: i];
                 let url: id = msg_send![context, URL];
+                let options: id = msg_send![context, options];
+                if !options.is_null() {
+                    let in_place: BOOL = msg_send![options, openInPlace];
+                    if in_place == YES {
+                        let _: BOOL = msg_send![url, startAccessingSecurityScopedResource];
+                    }
+                }
                 let string: id = msg_send![url, absoluteString];
                 string.to_str().to_string()
             })
-            .collect::<Vec<_>>()
-    };
-    platform.deliver_urls(urls);
+            .collect()
+    }
 }
 
 extern "C" fn scene_perform_shortcut(

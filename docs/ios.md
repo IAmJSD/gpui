@@ -78,6 +78,11 @@ Working:
   system edit menu (`UIEditMenuInteraction`, iOS 16+) when the app has
   registered `OsAction::Cut`/`Copy`/`Paste`/`SelectAll` menu items, and
   those actions are what the menu's buttons dispatch.
+- **Files handed to the app** (the share sheet's "Copy to", Files'
+  "Open in", a document type the bundle declares) reach
+  `App::on_open_urls` as `file://` URLs, whether the app was running or
+  was launched for them; a file opened in place has its security scope
+  started before delivery and kept for the life of the process.
 - Pasteboard (text with gpui's metadata, and images), `open_url`,
   `prompt` (an alert), the document picker for `prompt_for_paths` and
   `prompt_for_new_path` (the latter exports an empty placeholder file and
