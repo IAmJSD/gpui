@@ -848,6 +848,10 @@ impl Platform for IosPlatform {
                     verb = "creating";
                     status = SecItemAdd(attrs.as_concrete_TypeRef(), ptr::null_mut());
                 }
+                anyhow::ensure!(
+                    status != errSecMissingEntitlement,
+                    "{verb} password failed: {MISSING_ENTITLEMENT}"
+                );
                 anyhow::ensure!(status == errSecSuccess, "{verb} password failed: {status}");
             }
             Ok(())
@@ -874,6 +878,14 @@ impl Platform for IosPlatform {
                 match status {
                     security::errSecSuccess => {}
                     security::errSecItemNotFound | security::errSecUserCanceled => return Ok(None),
+                    // An app signed without keychain entitlements (a bare
+                    // Simulator bundle, say) has no keychain, which for a
+                    // read means nothing stored; a write says why it
+                    // cannot be kept.
+                    security::errSecMissingEntitlement => {
+                        log::warn!("{}", security::MISSING_ENTITLEMENT);
+                        return Ok(None);
+                    }
                     _ => anyhow::bail!("reading password failed: {status}"),
                 }
 
@@ -910,6 +922,9 @@ impl Platform for IosPlatform {
                 query_attrs.set(kSecAttrServer as *const _, url.as_CFTypeRef());
 
                 let status = SecItemDelete(query_attrs.as_concrete_TypeRef());
+                if status == errSecItemNotFound || status == errSecMissingEntitlement {
+                    return Ok(());
+                }
                 anyhow::ensure!(status == errSecSuccess, "delete password failed: {status}");
             }
             Ok(())
@@ -1563,4 +1578,7 @@ mod security {
     pub const errSecSuccess: OSStatus = 0;
     pub const errSecUserCanceled: OSStatus = -128;
     pub const errSecItemNotFound: OSStatus = -25300;
+    pub const errSecMissingEntitlement: OSStatus = -34018;
+    pub const MISSING_ENTITLEMENT: &str = "the app is not signed with keychain entitlements \
+        (keychain-access-groups), so it has no keychain";
 }

@@ -85,6 +85,13 @@ Working:
   keychain for credentials, dark mode through the trait collection, and
   the app being paused while backgrounded (Metal work in the background
   terminates an iOS app).
+- The keychain needs the app signed with `keychain-access-groups`. A
+  bundle without it (the unsigned Simulator bundles the scripts here
+  make) gets `errSecMissingEntitlement` from every keychain call:
+  `read_credentials` reports that as nothing stored (with a warning in
+  the log), `delete_credentials` as done, and `write_credentials` fails
+  with a message that says why, so an app can tell the user a login
+  cannot be kept rather than that one is broken.
 
 Not available:
 
