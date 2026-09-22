@@ -54,7 +54,9 @@ impl WindowsWindowInner {
             WM_PAINT => self.handle_paint_msg(handle),
             WM_CLOSE => self.handle_close_msg(),
             WM_DESTROY => self.handle_destroy_msg(handle),
-            WM_POINTERDOWN | WM_POINTERUPDATE | WM_POINTERUP => self.handle_pointer_msg(wparam),
+            WM_POINTERDOWN | WM_POINTERUPDATE | WM_POINTERUP => {
+                self.handle_pointer_msg(handle, msg, wparam)
+            }
             WM_MOUSEMOVE => self.handle_mouse_move_msg(handle, lparam, wparam),
             WM_MOUSELEAVE | WM_NCMOUSELEAVE => self.handle_mouse_leave_msg(),
             WM_NCMOUSEMOVE => self.handle_nc_mouse_move_msg(handle, lparam),
@@ -319,7 +321,9 @@ impl WindowsWindowInner {
     /// it. Deliberately never handles the message: the rest of this backend is
     /// built on those synthesised `WM_MOUSE*` messages, and consuming pointer
     /// messages here would suppress them.
-    fn handle_pointer_msg(&self, wparam: WPARAM) -> Option<isize> {
+    fn handle_pointer_msg(&self, handle: HWND, msg: u32, wparam: WPARAM) -> Option<isize> {
+        self.state.borrow_mut().pen_tilt = None;
+        self.state.borrow_mut().pen_updates_direct = false;
         let pointer_id = wparam.loword() as u32;
         let mut pointer_type = POINTER_INPUT_TYPE::default();
         if unsafe { GetPointerType(pointer_id, &mut pointer_type) }.is_err()
@@ -332,16 +336,69 @@ impl WindowsWindowInner {
             return None;
         }
         // 0..=1024, and 0 whenever the pen hovers without touching.
-        self.state.borrow_mut().pen_pressure = pen_info.pressure as f32 / 1024.0;
+        let mut state = self.state.borrow_mut();
+        state.pen_pressure = pen_info.pressure as f32 / 1024.0;
+        state.pen_tilt =
+            crate::platform::pen_tilt::windows(pen_info.penMask, pen_info.tiltX, pen_info.tiltY);
+        // WM_POINTERUPDATE also carries orientation-only samples. Dispatch
+        // directly: legacy WM_MOUSEMOVE is not guaranteed when XY is unchanged.
+        // Down/up still use the established legacy click/capture handling.
+        if msg == WM_POINTERUPDATE
+            && pen_info
+                .pointerInfo
+                .pointerFlags
+                .contains(POINTER_FLAG_PRIMARY)
+        {
+            let mut position = pen_info.pointerInfo.ptPixelLocation;
+            if unsafe { ScreenToClient(handle, &mut position) }.as_bool() {
+                let input = PlatformInput::MouseMove(MouseMoveEvent {
+                    position: logical_point(
+                        position.x as f32,
+                        position.y as f32,
+                        state.scale_factor,
+                    ),
+                    pressed_button: if pen_info
+                        .pointerInfo
+                        .pointerFlags
+                        .contains(POINTER_FLAG_INCONTACT)
+                    {
+                        Some(if pen_info.penFlags & 1 != 0 {
+                            MouseButton::Right
+                        } else {
+                            MouseButton::Left
+                        })
+                    } else {
+                        None
+                    },
+                    modifiers: current_modifiers(),
+                    pressure: if pen_info.penMask & 1 != 0 {
+                        state.pen_pressure
+                    } else {
+                        1.0
+                    },
+                    tilt: state.pen_tilt,
+                });
+                if let Some(mut callback) = state.callbacks.input.take() {
+                    state.pen_updates_direct = true;
+                    drop(state);
+                    self.start_tracking_mouse(handle, TME_LEAVE);
+                    callback(input);
+                    self.state.borrow_mut().callbacks.input = Some(callback);
+                }
+            }
+        }
         None
     }
 
-    /// The pressure to report on the mouse message currently being handled:
-    /// the cached pen pressure when the message was synthesised from pen
-    /// input, and full pressure for an ordinary mouse -- or for a hovering
-    /// pen, whose zero reading is indistinguishable from no reading at all.
-    ///
+    /// Only a mouse message promoted from a pen may use its cached sample.
     /// Must be called while `self.state` is unborrowed.
+    fn current_mouse_tilt(&self) -> Option<[f32; 2]> {
+        let extra_info = unsafe { GetMessageExtraInfo() }.0 as u32;
+        crate::platform::pen_tilt::windows_mouse(extra_info, self.state.borrow().pen_tilt)
+    }
+
+    /// Report pen pressure on promoted pen messages, and full pressure for
+    /// an ordinary mouse or a hovering pen, preserving the existing contract.
     fn current_mouse_pressure(&self) -> f32 {
         // Mouse messages synthesised from pen or touch input carry this
         // signature in their extra info (documented under "distinguishing pen
@@ -440,6 +497,13 @@ impl WindowsWindowInner {
     }
 
     fn handle_mouse_move_msg(&self, handle: HWND, lparam: LPARAM, wparam: WPARAM) -> Option<isize> {
+        // The pointer path already delivered this pen's complete sample.
+        let extra_info = unsafe { GetMessageExtraInfo() }.0 as u32;
+        if self.state.borrow().pen_updates_direct
+            && crate::platform::pen_tilt::windows_is_pen_mouse(extra_info)
+        {
+            return Some(0);
+        }
         self.start_tracking_mouse(handle, TME_LEAVE);
 
         let mut lock = self.state.borrow_mut();
@@ -467,6 +531,7 @@ impl WindowsWindowInner {
             position: logical_point(x, y, scale_factor),
             pressed_button,
             modifiers: current_modifiers(),
+            tilt: self.current_mouse_tilt(),
             pressure: self.current_mouse_pressure(),
         });
         let handled = !func(input).propagate;
@@ -626,6 +691,7 @@ impl WindowsWindowInner {
             modifiers: current_modifiers(),
             click_count,
             first_mouse: false,
+            tilt: self.current_mouse_tilt(),
             pressure: self.current_mouse_pressure(),
         });
         let handled = !func(input).propagate;
@@ -656,6 +722,7 @@ impl WindowsWindowInner {
             position: logical_point(x, y, scale_factor),
             modifiers: current_modifiers(),
             click_count,
+            tilt: self.current_mouse_tilt(),
             pressure: self.current_mouse_pressure(),
         });
         let handled = !func(input).propagate;
@@ -1102,6 +1169,7 @@ impl WindowsWindowInner {
             pressed_button: None,
             modifiers: current_modifiers(),
             // A mouse reports full pressure; tablets override this.
+            tilt: None,
             pressure: 1.0,
         });
         let handled = !func(input).propagate;
@@ -1136,6 +1204,7 @@ impl WindowsWindowInner {
                 click_count,
                 first_mouse: false,
                 // A mouse reports full pressure; tablets override this.
+                tilt: None,
                 pressure: 1.0,
             });
             let result = func(input);
@@ -1186,6 +1255,7 @@ impl WindowsWindowInner {
                 modifiers: current_modifiers(),
                 click_count: 1,
                 // A mouse reports full pressure; tablets override this.
+                tilt: None,
                 pressure: 1.0,
             });
             let handled = !func(input).propagate;

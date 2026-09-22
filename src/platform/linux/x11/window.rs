@@ -79,6 +79,8 @@ x11rb::atom_manager! {
         _MOTIF_WM_HINTS,
         _GTK_SHOW_WINDOW_MENU,
         AbsPressure: b"Abs Pressure",
+        AbsTiltX: b"Abs Tilt X",
+        AbsTiltY: b"Abs Tilt Y",
         _GTK_FRAME_EXTENTS,
         _GTK_EDGE_CONSTRAINTS,
         _NET_CLIENT_LIST_STACKING,

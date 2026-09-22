@@ -1633,6 +1633,7 @@ extern "C" fn touches_began(this: &Object, _: Sel, touches: id, event: id) {
                     modifiers,
                     click_count,
                     first_mouse: false,
+                    tilt: None,
                     pressure: touch_pressure(touch),
                 }),
             );
@@ -1666,6 +1667,7 @@ fn cancel_press(state: &Arc<Mutex<IosWindowState>>, button: MouseButton, mode: T
             position,
             modifiers,
             click_count: 1,
+            tilt: None,
             pressure: 1.0,
         }),
     );
@@ -1688,6 +1690,7 @@ fn lift_hover(state: &Arc<Mutex<IosWindowState>>) {
             position: CANCEL_POSITION,
             pressed_button: None,
             modifiers,
+            tilt: None,
             pressure: 0.0,
         }),
     );
@@ -1805,6 +1808,7 @@ extern "C" fn touches_moved(this: &Object, _: Sel, touches: id, event: id) {
                             modifiers,
                             click_count: 1,
                             first_mouse: false,
+                            tilt: None,
                             pressure,
                         }),
                     );
@@ -1814,6 +1818,7 @@ extern "C" fn touches_moved(this: &Object, _: Sel, touches: id, event: id) {
                             position,
                             pressed_button: Some(button),
                             modifiers,
+                            tilt: None,
                             pressure,
                         }),
                     );
@@ -1826,6 +1831,7 @@ extern "C" fn touches_moved(this: &Object, _: Sel, touches: id, event: id) {
                             position,
                             pressed_button: Some(button),
                             modifiers,
+                            tilt: None,
                             pressure,
                         }),
                     );
@@ -1869,6 +1875,7 @@ fn finish_touch(this: &Object, touches: id, cancelled: bool) {
                             position,
                             modifiers,
                             click_count,
+                            tilt: None,
                             pressure: 1.0,
                         }),
                     );
@@ -2081,6 +2088,7 @@ extern "C" fn handle_long_press(this: &Object, _: Sel, recognizer: id) {
                 modifiers,
                 click_count: 1,
                 first_mouse: false,
+                tilt: None,
                 pressure: 1.0,
             }),
         );
@@ -2091,6 +2099,7 @@ extern "C" fn handle_long_press(this: &Object, _: Sel, recognizer: id) {
                 position,
                 modifiers,
                 click_count: 1,
+                tilt: None,
                 pressure: 1.0,
             }),
         );
@@ -2240,6 +2249,7 @@ extern "C" fn handle_hover(this: &Object, _: Sel, recognizer: id) {
                         position,
                         pressed_button: None,
                         modifiers,
+                        tilt: None,
                         pressure: 1.0,
                     }),
                 );

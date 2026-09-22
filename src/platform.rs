@@ -1,6 +1,14 @@
 mod app_menu;
 mod keyboard;
 mod keystroke;
+#[cfg(any(
+    target_os = "macos",
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "freebsd",
+    test
+))]
+mod pen_tilt;
 
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 mod linux;

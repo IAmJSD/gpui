@@ -3694,6 +3694,7 @@ impl Window {
                         pressed_button: Some(MouseButton::Left),
                         modifiers: Modifiers::default(),
                         // A mouse reports full pressure; tablets override this.
+                        tilt: None,
                         pressure: 1.0,
                     })
                 }
@@ -3704,6 +3705,7 @@ impl Window {
                         pressed_button: Some(MouseButton::Left),
                         modifiers: Modifiers::default(),
                         // A mouse reports full pressure; tablets override this.
+                        tilt: None,
                         pressure: 1.0,
                     })
                 }
@@ -3716,6 +3718,7 @@ impl Window {
                         modifiers: Modifiers::default(),
                         click_count: 1,
                         // A mouse reports full pressure; tablets override this.
+                        tilt: None,
                         pressure: 1.0,
                     })
                 }

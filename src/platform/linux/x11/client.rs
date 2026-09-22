@@ -153,6 +153,13 @@ struct PointerDeviceState {
     horizontal: ScrollAxisState,
     vertical: ScrollAxisState,
     pressure: Option<PressureAxisState>,
+    tilt: Option<[TiltAxisState; 2]>,
+}
+
+#[derive(Debug)]
+struct TiltAxisState {
+    valuator_number: u16,
+    last_value: f32,
 }
 
 /// State of a device's stylus pressure valuator ("Abs Pressure"). Ordinary
@@ -377,9 +384,13 @@ impl X11Client {
             .reply()
             .context("Failed to get XCB atoms")?;
 
-        let pointer_device_states =
-            current_pointer_device_states(&xcb_connection, &BTreeMap::new(), atoms.AbsPressure)
-                .unwrap_or_default();
+        let pointer_device_states = current_pointer_device_states(
+            &xcb_connection,
+            &BTreeMap::new(),
+            atoms.AbsPressure,
+            [atoms.AbsTiltX, atoms.AbsTiltY],
+        )
+        .unwrap_or_default();
 
         let root = xcb_connection.setup().roots[0].root;
         let compositor_present = check_compositor_present(&xcb_connection, root);
@@ -1132,6 +1143,7 @@ impl X11Client {
                 }
                 let pressure =
                     get_pressure_and_update_state(&mut state.pointer_device_states, &event);
+                let tilt = get_tilt_and_update_state(&mut state.pointer_device_states, &event);
                 match button_or_scroll_from_event_detail(event.detail) {
                     Some(ButtonOrScroll::Button(button)) => {
                         let click_elapsed = state.last_click.elapsed();
@@ -1158,6 +1170,7 @@ impl X11Client {
                             modifiers,
                             click_count: current_count,
                             first_mouse: false,
+                            tilt,
                             pressure,
                         }));
                     }
@@ -1197,6 +1210,7 @@ impl X11Client {
                 );
                 let pressure =
                     get_pressure_and_update_state(&mut state.pointer_device_states, &event);
+                let tilt = get_tilt_and_update_state(&mut state.pointer_device_states, &event);
                 match button_or_scroll_from_event_detail(event.detail) {
                     Some(ButtonOrScroll::Button(button)) => {
                         let click_count = state.current_count;
@@ -1206,6 +1220,7 @@ impl X11Client {
                             position,
                             modifiers,
                             click_count,
+                            tilt,
                             pressure,
                         }));
                     }
@@ -1237,13 +1252,31 @@ impl X11Client {
                     });
                 let pressure =
                     get_pressure_and_update_state(&mut state.pointer_device_states, &event);
+                let tilt = get_tilt_and_update_state(&mut state.pointer_device_states, &event);
+                let tilt_valuator_changed = state
+                    .pointer_device_states
+                    .get(&event.sourceid)
+                    .and_then(|device| device.tilt.as_ref())
+                    .is_some_and(|axes| {
+                        axes.iter().any(|axis| {
+                            get_valuator_axis_index(&event.valuator_mask, axis.valuator_number)
+                                .is_some()
+                        })
+                    });
                 drop(state);
 
-                if event.valuator_mask[0] & 3 != 0 || pressure_valuator_changed {
+                if event
+                    .valuator_mask
+                    .first()
+                    .is_some_and(|mask| mask & 3 != 0)
+                    || pressure_valuator_changed
+                    || tilt_valuator_changed
+                {
                     window.handle_input(PlatformInput::MouseMove(crate::MouseMoveEvent {
                         position,
                         pressed_button,
                         modifiers,
+                        tilt,
                         pressure,
                     }));
                 }
@@ -1375,6 +1408,7 @@ impl X11Client {
                     &state.xcb_connection,
                     &state.pointer_device_states,
                     state.atoms.AbsPressure,
+                    [state.atoms.AbsTiltX, state.atoms.AbsTiltY],
                 ) {
                     state.pointer_device_states = pointer_device_states;
                 }
@@ -2216,6 +2250,7 @@ fn current_pointer_device_states(
     xcb_connection: &XCBConnection,
     scroll_values_to_preserve: &BTreeMap<xinput::DeviceId, PointerDeviceState>,
     abs_pressure_atom: xproto::Atom,
+    tilt_atoms: [xproto::Atom; 2],
 ) -> Option<BTreeMap<xinput::DeviceId, PointerDeviceState>> {
     let devices_query_result = get_reply(
         || "Failed to query XInput devices",
@@ -2254,7 +2289,22 @@ fn current_pointer_device_states(
                     .filter_map(|class| class.data.as_valuator())
                     .find(|valuator| valuator.label == abs_pressure_atom)
                     .and_then(pressure_valuator_to_axis_state);
-                if horizontal.is_none() && vertical.is_none() && pressure.is_none() {
+                let tilt_axes = tilt_atoms.map(|atom| {
+                    info.classes
+                        .iter()
+                        .filter_map(|class| class.data.as_valuator())
+                        .find(|v| v.label == atom)
+                        .and_then(tilt_valuator_to_axis_state)
+                });
+                let tilt = match tilt_axes {
+                    [Some(x), Some(y)] => Some([x, y]),
+                    _ => None,
+                };
+                if horizontal.is_none()
+                    && vertical.is_none()
+                    && pressure.is_none()
+                    && tilt.is_none()
+                {
                     None
                 } else {
                     Some((
@@ -2263,6 +2313,7 @@ fn current_pointer_device_states(
                             horizontal: horizontal.unwrap_or_else(Default::default),
                             vertical: vertical.unwrap_or_else(Default::default),
                             pressure,
+                            tilt,
                         },
                     ))
                 }
@@ -2288,6 +2339,39 @@ fn scroll_data_to_axis_state(
         multiplier: SCROLL_LINES / fp3232_to_f32(data.increment),
         scroll_value: old_axis_state_with_valid_scroll_value.and_then(|state| state.scroll_value),
     }
+}
+
+// The standard Abs Tilt X/Y axes from xf86-input-wacom are degrees,
+// with integer resolution round(180/pi) (units/radian). Unknown unit systems
+// are deliberately ignored rather than normalized by the device's range.
+fn tilt_valuator_to_axis_state(v: &xinput::DeviceClassDataValuator) -> Option<TiltAxisState> {
+    if v.mode != xinput::ValuatorMode::ABSOLUTE || v.resolution != 57 {
+        return None;
+    }
+    let value = fp3232_to_f32(v.value);
+    (value.is_finite() && value.abs() <= 90.0).then_some(TiltAxisState {
+        valuator_number: v.number,
+        last_value: value,
+    })
+}
+
+fn get_tilt_and_update_state(
+    devices: &mut BTreeMap<xinput::DeviceId, PointerDeviceState>,
+    event: &xinput::ButtonPressEvent,
+) -> Option<[f32; 2]> {
+    let axes = devices.get_mut(&event.sourceid)?.tilt.as_mut()?;
+    for axis in axes.iter_mut() {
+        if let Some(index) = get_valuator_axis_index(&event.valuator_mask, axis.valuator_number)
+            && let Some(value) = event.axisvalues.get(index)
+        {
+            axis.last_value = fp3232_to_f32(*value);
+        }
+    }
+    let values = [axes[0].last_value, axes[1].last_value];
+    values
+        .iter()
+        .all(|v| v.is_finite() && v.abs() <= 90.0)
+        .then_some(values)
 }
 
 fn pressure_valuator_to_axis_state(
@@ -2668,4 +2752,78 @@ fn get_dpi_factor((width_px, height_px): (u32, u32), (width_mm, height_mm): (u64
 #[inline]
 fn valid_scale_factor(scale_factor: f32) -> bool {
     scale_factor.is_sign_positive() && scale_factor.is_normal()
+}
+
+#[cfg(test)]
+mod tilt_tests {
+    use super::*;
+
+    fn fixed(value: i32) -> xinput::Fp3232 {
+        xinput::Fp3232 {
+            integral: value,
+            frac: 0,
+        }
+    }
+
+    #[test]
+    fn xinput_sparse_axes_follow_source_device_without_range_normalization() {
+        let mut devices = BTreeMap::from([(
+            7,
+            PointerDeviceState {
+                horizontal: ScrollAxisState::default(),
+                vertical: ScrollAxisState::default(),
+                pressure: None,
+                tilt: Some([
+                    TiltAxisState {
+                        valuator_number: 3,
+                        last_value: 0.0,
+                    },
+                    TiltAxisState {
+                        valuator_number: 4,
+                        last_value: 0.0,
+                    },
+                ]),
+            },
+        )]);
+        let mut event = xinput::ButtonPressEvent {
+            sourceid: 7,
+            valuator_mask: vec![1 << 3],
+            axisvalues: vec![fixed(-30)],
+            ..Default::default()
+        };
+        assert_eq!(
+            get_tilt_and_update_state(&mut devices, &event),
+            Some([-30.0, 0.0])
+        );
+        event.valuator_mask = vec![1 << 4];
+        event.axisvalues = vec![fixed(45)];
+        assert_eq!(
+            get_tilt_and_update_state(&mut devices, &event),
+            Some([-30.0, 45.0])
+        );
+        event.sourceid = 8; // ordinary mouse following a tablet sample
+        assert_eq!(get_tilt_and_update_state(&mut devices, &event), None);
+        event.sourceid = 7;
+        event.axisvalues = vec![fixed(100)];
+        assert_eq!(get_tilt_and_update_state(&mut devices, &event), None);
+    }
+
+    #[test]
+    fn xinput_unknown_units_and_relative_axes_are_unavailable() {
+        let mut axis = xinput::DeviceClassDataValuator {
+            number: 3,
+            label: 10,
+            min: fixed(-64),
+            max: fixed(63),
+            value: fixed(30),
+            resolution: 57,
+            mode: xinput::ValuatorMode::ABSOLUTE,
+        };
+        assert_eq!(tilt_valuator_to_axis_state(&axis).unwrap().last_value, 30.0);
+        axis.resolution = 0;
+        assert!(tilt_valuator_to_axis_state(&axis).is_none());
+        axis.resolution = 57;
+        axis.mode = xinput::ValuatorMode::RELATIVE;
+        assert!(tilt_valuator_to_axis_state(&axis).is_none());
+    }
 }

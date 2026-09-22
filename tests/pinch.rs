@@ -137,12 +137,14 @@ fn test_pressure_reaches_handlers(cx: &mut TestAppContext) {
         modifiers: Default::default(),
         click_count: 1,
         first_mouse: false,
+        tilt: None,
         pressure: 0.42,
     });
     cx.simulate_event(gpui::MouseMoveEvent {
         position: point(px(60.), px(50.)),
         pressed_button: Some(gpui::MouseButton::Left),
         modifiers: Default::default(),
+        tilt: None,
         pressure: 0.9,
     });
 
