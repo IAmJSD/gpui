@@ -802,6 +802,7 @@ fn setup_event_listeners(inner: &Rc<WebWindowInner>) {
             modifiers: mouse_event_modifiers(&event),
             click_count,
             first_mouse,
+            tilt: None,
             pressure: pointer_pressure(&event),
         }));
     });
@@ -822,6 +823,7 @@ fn setup_event_listeners(inner: &Rc<WebWindowInner>) {
             position,
             modifiers: mouse_event_modifiers(&event),
             click_count,
+            tilt: None,
             pressure: pointer_pressure(&event),
         }));
         if result.default_prevented {
@@ -836,6 +838,7 @@ fn setup_event_listeners(inner: &Rc<WebWindowInner>) {
             position,
             pressed_button: pressed_button(event.buttons()),
             modifiers: mouse_event_modifiers(&event),
+            tilt: None,
             pressure: pointer_pressure(&event),
         }));
     });

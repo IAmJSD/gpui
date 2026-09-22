@@ -311,6 +311,8 @@ struct TabletTool {
     /// capability events. A tool without one -- a puck, or a mouse-shaped
     /// tool -- reports full pressure, as an ordinary mouse does.
     has_pressure: bool,
+    has_tilt: bool,
+    tilt: Option<[f32; 2]>,
     /// Cursor shape handle for this tool, when the compositor supports
     /// cursor-shape-v1. Each tool carries its own cursor, distinct from the
     /// pointer's.
@@ -338,6 +340,8 @@ impl TabletTool {
         Self {
             tool,
             has_pressure: false,
+            has_tilt: false,
+            tilt: None,
             cursor_shape_device,
             proximity_serial: 0,
             focused_window: None,
@@ -1795,6 +1799,11 @@ impl Dispatch<zwp_tablet_tool_v2::ZwpTabletToolV2, ()> for WaylandClientStatePtr
             zwp_tablet_tool_v2::Event::Capability {
                 capability: WEnum::Value(capability),
             } => {
+                if capability == zwp_tablet_tool_v2::Capability::Tilt
+                    && let Some(tablet_tool) = state.tablet_tools.get_mut(&tool_id)
+                {
+                    tablet_tool.has_tilt = true;
+                }
                 if capability == zwp_tablet_tool_v2::Capability::Pressure
                     && let Some(tablet_tool) = state.tablet_tools.get_mut(&tool_id)
                 {
@@ -1813,6 +1822,7 @@ impl Dispatch<zwp_tablet_tool_v2::ZwpTabletToolV2, ()> for WaylandClientStatePtr
                 let Some(tablet_tool) = state.tablet_tools.get_mut(&tool_id) else {
                     return;
                 };
+                tablet_tool.tilt = None;
                 tablet_tool.proximity_serial = serial;
                 tablet_tool.focused_window = Some(window.clone());
                 // Whatever was mid-frame belonged to the surface being left.
@@ -1839,6 +1849,17 @@ impl Dispatch<zwp_tablet_tool_v2::ZwpTabletToolV2, ()> for WaylandClientStatePtr
             zwp_tablet_tool_v2::Event::Motion { x, y } => {
                 if let Some(tablet_tool) = state.tablet_tools.get_mut(&tool_id) {
                     tablet_tool.position = point(px(x as f32), px(y as f32));
+                    tablet_tool.pending.motion = true;
+                }
+            }
+            zwp_tablet_tool_v2::Event::Tilt { tilt_x, tilt_y } => {
+                if let Some(tablet_tool) = state.tablet_tools.get_mut(&tool_id) {
+                    let value = [tilt_x as f32, tilt_y as f32];
+                    tablet_tool.tilt = tablet_tool
+                        .has_tilt
+                        .then(|| crate::platform::pen_tilt::degrees(value))
+                        .flatten();
+                    // Orientation-only samples must reach the application too.
                     tablet_tool.pending.motion = true;
                 }
             }
@@ -1883,6 +1904,7 @@ impl Dispatch<zwp_tablet_tool_v2::ZwpTabletToolV2, ()> for WaylandClientStatePtr
                 // the same hardware sample, including the pressure that arrived
                 // after the `down` it belongs to.
                 let pressure = tablet_tool.reported_pressure();
+                let tilt = tablet_tool.tilt;
                 let Some(window) = tablet_tool.focused_window.clone() else {
                     return;
                 };
@@ -1896,6 +1918,7 @@ impl Dispatch<zwp_tablet_tool_v2::ZwpTabletToolV2, ()> for WaylandClientStatePtr
                         position,
                         pressed_button: state.button_pressed,
                         modifiers: state.modifiers,
+                        tilt,
                         pressure,
                     }));
                 }
@@ -1912,6 +1935,7 @@ impl Dispatch<zwp_tablet_tool_v2::ZwpTabletToolV2, ()> for WaylandClientStatePtr
                         modifiers: state.modifiers,
                         click_count,
                         first_mouse: state.enter_token.take().is_some(),
+                        tilt,
                         pressure,
                     }));
                 }
@@ -1926,6 +1950,7 @@ impl Dispatch<zwp_tablet_tool_v2::ZwpTabletToolV2, ()> for WaylandClientStatePtr
                             modifiers: state.modifiers,
                             click_count,
                             first_mouse: state.enter_token.take().is_some(),
+                            tilt,
                             pressure,
                         }));
                     } else {
@@ -1935,6 +1960,7 @@ impl Dispatch<zwp_tablet_tool_v2::ZwpTabletToolV2, ()> for WaylandClientStatePtr
                             position,
                             modifiers: state.modifiers,
                             click_count: state.click.current_count,
+                            tilt,
                             pressure,
                         }));
                     }
@@ -1947,6 +1973,7 @@ impl Dispatch<zwp_tablet_tool_v2::ZwpTabletToolV2, ()> for WaylandClientStatePtr
                         position,
                         modifiers: state.modifiers,
                         click_count: state.click.current_count,
+                        tilt,
                         pressure,
                     }));
                 }
@@ -1961,6 +1988,7 @@ impl Dispatch<zwp_tablet_tool_v2::ZwpTabletToolV2, ()> for WaylandClientStatePtr
                     if let Some(tablet_tool) = state.tablet_tools.get_mut(&tool_id) {
                         tablet_tool.focused_window = None;
                         tablet_tool.pressure = 0.0;
+                        tablet_tool.tilt = None;
                     }
                     state.button_pressed = None;
                     // Only hand back the shared focus if a mouse has not taken
@@ -2203,6 +2231,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandClientStatePtr {
                         pressed_button: state.button_pressed,
                         modifiers: state.modifiers,
                         // A mouse reports full pressure; tablets override this.
+                        tilt: None,
                         pressure: 1.0,
                     });
                     drop(state);
@@ -2253,6 +2282,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandClientStatePtr {
                                 click_count,
                                 first_mouse: state.enter_token.take().is_some(),
                                 // A mouse reports full pressure; tablets override this.
+                                tilt: None,
                                 pressure: 1.0,
                             });
                             drop(state);
@@ -2269,6 +2299,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandClientStatePtr {
                                 modifiers: state.modifiers,
                                 click_count: state.click.current_count,
                                 // A mouse reports full pressure; tablets override this.
+                                tilt: None,
                                 pressure: 1.0,
                             });
                             drop(state);

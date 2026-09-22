@@ -35,6 +35,16 @@ unsafe fn read_pressure(native_event: id) -> f32 {
     if p > 0.0 { p.min(1.0) } else { 1.0 }
 }
 
+/// AppKit's tablet subtype is 1; ordinary mouse events have no orientation.
+unsafe fn read_tilt(native_event: id) -> Option<[f32; 2]> {
+    let subtype: i16 = unsafe { msg_send![native_event, subtype] };
+    if subtype != 1 && unsafe { native_event.eventType() } != NSEventType::NSTabletPoint {
+        return None;
+    }
+    let tilt: cocoa::foundation::NSPoint = unsafe { msg_send![native_event, tilt] };
+    crate::platform::pen_tilt::appkit(1, [tilt.x as f32, tilt.y as f32])
+}
+
 pub fn key_to_native(key: &str) -> Cow<'_, str> {
     use cocoa::appkit::*;
     let code = match key {
@@ -168,6 +178,7 @@ impl PlatformInput {
                             modifiers: read_modifiers(native_event),
                             click_count: native_event.clickCount() as usize,
                             first_mouse: false,
+                            tilt: read_tilt(native_event),
                             pressure: read_pressure(native_event),
                         })
                     })
@@ -194,6 +205,7 @@ impl PlatformInput {
                             ),
                             modifiers: read_modifiers(native_event),
                             click_count: native_event.clickCount() as usize,
+                            tilt: read_tilt(native_event),
                             pressure: read_pressure(native_event),
                         })
                     })
@@ -222,6 +234,7 @@ impl PlatformInput {
                                 first_mouse: false,
                                 // A swipe comes from a mouse or trackpad,
                                 // never a stylus.
+                                tilt: None,
                                 pressure: 1.0,
                             })
                         }),
@@ -311,10 +324,30 @@ impl PlatformInput {
                                 window_height - px(native_event.locationInWindow().y as f32),
                             ),
                             modifiers: read_modifiers(native_event),
+                            tilt: read_tilt(native_event),
                             pressure: read_pressure(native_event),
                         })
                     })
                 }
+                NSEventType::NSTabletPoint => window_height.map(|window_height| {
+                    let buttons: u64 = msg_send![native_event, buttonMask];
+                    Self::MouseMove(MouseMoveEvent {
+                        position: point(
+                            px(native_event.locationInWindow().x as f32),
+                            window_height - px(native_event.locationInWindow().y as f32),
+                        ),
+                        pressed_button: if buttons & 1 != 0 {
+                            Some(MouseButton::Left)
+                        } else if buttons & 2 != 0 {
+                            Some(MouseButton::Right)
+                        } else {
+                            None
+                        },
+                        modifiers: read_modifiers(native_event),
+                        tilt: read_tilt(native_event),
+                        pressure: read_pressure(native_event),
+                    })
+                }),
                 NSEventType::NSMouseMoved => window_height.map(|window_height| {
                     Self::MouseMove(MouseMoveEvent {
                         position: point(
@@ -323,6 +356,7 @@ impl PlatformInput {
                         ),
                         pressed_button: None,
                         modifiers: read_modifiers(native_event),
+                        tilt: read_tilt(native_event),
                         pressure: read_pressure(native_event),
                     })
                 }),

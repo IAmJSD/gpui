@@ -813,6 +813,7 @@ fn handle_motion(state: &Rc<RefCell<AndroidWindowState>>, event: &MotionEvent<'_
                     position,
                     pressed_button: None,
                     modifiers,
+                    tilt: None,
                     pressure,
                 }),
             );
@@ -896,6 +897,7 @@ fn begin_primary(
             modifiers,
             click_count,
             first_mouse: false,
+            tilt: None,
             pressure,
         }),
     );
@@ -919,6 +921,7 @@ fn cancel_press(state: &Rc<RefCell<AndroidWindowState>>, button: MouseButton, mo
             position,
             modifiers,
             click_count: 1,
+            tilt: None,
             pressure: 1.0,
         }),
     );
@@ -939,6 +942,7 @@ fn lift_hover(state: &Rc<RefCell<AndroidWindowState>>) {
             position: CANCEL_POSITION,
             pressed_button: None,
             modifiers,
+            tilt: None,
             pressure: 0.0,
         }),
     );
@@ -1010,6 +1014,7 @@ fn move_primary(state: &Rc<RefCell<AndroidWindowState>>, position: Point<Pixels>
                     modifiers,
                     click_count: 1,
                     first_mouse: false,
+                    tilt: None,
                     pressure,
                 }),
             );
@@ -1019,6 +1024,7 @@ fn move_primary(state: &Rc<RefCell<AndroidWindowState>>, position: Point<Pixels>
                     position,
                     pressed_button: Some(button),
                     modifiers,
+                    tilt: None,
                     pressure,
                 }),
             );
@@ -1031,6 +1037,7 @@ fn move_primary(state: &Rc<RefCell<AndroidWindowState>>, position: Point<Pixels>
                     position,
                     pressed_button: Some(button),
                     modifiers,
+                    tilt: None,
                     pressure,
                 }),
             );
@@ -1097,6 +1104,7 @@ fn finish_touch(
                     position,
                     modifiers,
                     click_count,
+                    tilt: None,
                     pressure: 1.0,
                 }),
             );
@@ -1406,6 +1414,7 @@ fn tick_long_press(state: &Rc<RefCell<AndroidWindowState>>) {
             modifiers,
             click_count: 1,
             first_mouse: false,
+            tilt: None,
             pressure: 1.0,
         }),
     );
@@ -1416,6 +1425,7 @@ fn tick_long_press(state: &Rc<RefCell<AndroidWindowState>>) {
             position,
             modifiers,
             click_count: 1,
+            tilt: None,
             pressure: 1.0,
         }),
     );

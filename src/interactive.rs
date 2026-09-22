@@ -110,6 +110,9 @@ pub struct MouseDownEvent {
     /// platforms whose tablet input is not wired up, so a caller can
     /// multiply by it unconditionally.
     pub pressure: f32,
+    /// Pen tilt in screen-axis degrees, -90..=90. None when unavailable.
+    /// Positive X points right and positive Y down; zero is perpendicular.
+    pub tilt: Option<[f32; 2]>,
 }
 
 impl Sealed for MouseDownEvent {}
@@ -137,6 +140,9 @@ pub struct MouseUpEvent {
 
     /// Stylus pressure, 0.0..=1.0. See [`MouseDownEvent::pressure`].
     pub pressure: f32,
+    /// Pen tilt in screen-axis degrees, -90..=90. None when unavailable.
+    /// Positive X points right and positive Y down; zero is perpendicular.
+    pub tilt: Option<[f32; 2]>,
 }
 
 impl Sealed for MouseUpEvent {}
@@ -352,6 +358,9 @@ pub struct MouseMoveEvent {
 
     /// Stylus pressure, 0.0..=1.0. See [`MouseDownEvent::pressure`].
     pub pressure: f32,
+    /// Pen tilt in screen-axis degrees, -90..=90. None when unavailable.
+    /// Positive X points right and positive Y down; zero is perpendicular.
+    pub tilt: Option<[f32; 2]>,
 }
 
 impl Sealed for MouseMoveEvent {}

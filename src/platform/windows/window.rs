@@ -55,6 +55,8 @@ pub struct WindowsWindowState {
     /// `WM_POINTER*` messages so the legacy mouse messages synthesised from
     /// them can report it. Zero whenever no pen is touching.
     pub pen_pressure: f32,
+    pub pen_tilt: Option<[f32; 2]>,
+    pub pen_updates_direct: bool,
     /// Finger distance reported by the previous `GID_ZOOM` gesture message,
     /// so absolute distances can be turned into the per-event deltas
     /// `PinchEvent` wants. `None` when no pinch is in flight.
@@ -149,6 +151,8 @@ impl WindowsWindowState {
             renderer,
             click_state,
             pen_pressure: 0.0,
+            pen_tilt: None,
+            pen_updates_direct: false,
             last_zoom_distance: None,
             current_cursor,
             nc_button_pressed,
