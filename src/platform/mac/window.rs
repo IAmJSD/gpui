@@ -403,6 +403,12 @@ struct MacWindowState {
     native_view: NonNull<Object>,
     blurred_view: Option<id>,
     display_link: Option<DisplayLink>,
+    /// Whether the window is entirely covered. It still draws then, but on
+    /// one display-link tick in [`OCCLUDED_FRAME_DIVISOR`], so it keeps up
+    /// with changes (for screenshots and for the moment it is uncovered)
+    /// without spending a full frame rate on pixels nobody can see.
+    occluded: bool,
+    occluded_ticks: u32,
     renderer: renderer::Renderer,
     request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
     event_callback: Option<Box<dyn FnMut(PlatformInput) -> crate::DispatchEventResult>>,
@@ -486,15 +492,12 @@ impl MacWindowState {
 
     fn start_display_link(&mut self) {
         self.stop_display_link();
-        unsafe {
-            if !self
+        self.occluded = unsafe {
+            !self
                 .native_window
                 .occlusionState()
                 .contains(NSWindowOcclusionState::NSWindowOcclusionStateVisible)
-            {
-                return;
-            }
-        }
+        };
         let display_id = unsafe { display_id_for_screen(self.native_window.screen()) };
         if let Some(mut display_link) =
             DisplayLink::new(display_id, self.native_view.as_ptr() as *mut c_void, step).log_err()
@@ -700,6 +703,8 @@ impl MacWindow {
                 native_view: NonNull::new_unchecked(native_view),
                 blurred_view: None,
                 display_link: None,
+                occluded: false,
+                occluded_ticks: 0,
                 renderer: renderer::new_renderer(
                     renderer_context,
                     native_window as *mut _,
@@ -1925,10 +1930,11 @@ extern "C" fn window_did_change_occlusion_state(this: &Object, _: Sel, _: id) {
             .contains(NSWindowOcclusionState::NSWindowOcclusionStateVisible)
         {
             lock.move_traffic_light();
-            lock.start_display_link();
-        } else {
-            lock.stop_display_link();
         }
+        // Covered windows keep a throttled display link (see `occluded`):
+        // apps driven in the background, and screenshots of them, need
+        // them to stay current.
+        lock.start_display_link();
     }
 }
 
@@ -2162,10 +2168,20 @@ extern "C" fn display_layer(this: &Object, _: Sel, _: id) {
     }
 }
 
+/// A covered window acts on one display-link tick in this many.
+const OCCLUDED_FRAME_DIVISOR: u32 = 8;
+
 unsafe extern "C" fn step(view: *mut c_void) {
     let view = view as id;
     let window_state = unsafe { get_window_state(&*view) };
     let mut lock = window_state.lock();
+
+    if lock.occluded {
+        lock.occluded_ticks = lock.occluded_ticks.wrapping_add(1);
+        if lock.occluded_ticks % OCCLUDED_FRAME_DIVISOR != 0 {
+            return;
+        }
+    }
 
     if let Some(mut callback) = lock.request_frame_callback.take() {
         drop(lock);
